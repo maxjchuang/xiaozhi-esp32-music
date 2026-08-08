@@ -22,9 +22,38 @@
 
  namespace {
 
+ bool IsPrivateAudioProxyUrl(const std::string& url) {
+     constexpr char kPrefix[] = "http://192.168.";
+     constexpr char kSuffix[] = ":8765/official-test.mp3";
+     if (url.compare(0, sizeof(kPrefix) - 1, kPrefix) != 0 ||
+         url.size() <= (sizeof(kPrefix) - 1) + (sizeof(kSuffix) - 1) ||
+         url.compare(url.size() - (sizeof(kSuffix) - 1), sizeof(kSuffix) - 1, kSuffix) != 0) {
+         return false;
+     }
+
+     const auto address_part = url.substr(
+         sizeof(kPrefix) - 1,
+         url.size() - (sizeof(kPrefix) - 1) - (sizeof(kSuffix) - 1));
+     const auto dot = address_part.find('.');
+     if (dot == std::string::npos || address_part.find('.', dot + 1) != std::string::npos) {
+         return false;
+     }
+     auto is_valid_octet = [](const std::string& value) {
+         if (value.empty() || value.size() > 3 ||
+             !std::all_of(value.begin(), value.end(), [](unsigned char ch) { return std::isdigit(ch); })) {
+             return false;
+         }
+         return std::stoi(value) <= 255;
+     };
+     return is_valid_octet(address_part.substr(0, dot)) &&
+            is_valid_octet(address_part.substr(dot + 1));
+ }
+
  bool IsApprovedTestAudioUrl(const std::string& url) {
      constexpr char kApprovedPrefix[] = "https://dl.espressif.com/";
-     if (url.empty() || url.size() > 2048 || url.compare(0, sizeof(kApprovedPrefix) - 1, kApprovedPrefix) != 0) {
+     if (url.empty() || url.size() > 2048 ||
+         (url.compare(0, sizeof(kApprovedPrefix) - 1, kApprovedPrefix) != 0 &&
+          !IsPrivateAudioProxyUrl(url))) {
          return false;
      }
      return std::none_of(url.begin(), url.end(), [](unsigned char ch) {
@@ -128,10 +157,10 @@
      auto music = board.GetMusic();
      if (music) {
          AddTool("self.online_music.play_music",
-             "播放由外部 MCP 解析得到的 HTTPS 音频直链。当前测试阶段只允许乐鑫官方测试音频域名。\n"
+             "播放由外部 MCP 解析得到的音频直链。当前测试阶段只允许乐鑫官方测试音频或本机 MCP 的固定局域网代理。\n"
              "参数:\n"
              "  `play_type`: 必须为 'url'。\n"
-             "  `url`: 要播放的 HTTPS MP3 地址。\n"
+             "  `url`: 要播放的 HTTP(S) MP3 地址。\n"
              "  `url_song_name`: 屏幕显示的歌曲名称。\n"
              "返回:\n"
              "  播放状态信息。",
@@ -152,7 +181,7 @@
                      return "{\"success\": false, \"message\": \"play_type 必须为 url\"}";
                  }
                  if (!IsApprovedTestAudioUrl(url)) {
-                     return "{\"success\": false, \"message\": \"当前仅允许 https://dl.espressif.com/ 下的测试音频\"}";
+                     return "{\"success\": false, \"message\": \"当前仅允许乐鑫官方测试音频或固定局域网代理\"}";
                  }
                  if (song_name.size() > 192 || ContainsControlCharacter(song_name)) {
                      return "{\"success\": false, \"message\": \"歌曲名称无效\"}";
