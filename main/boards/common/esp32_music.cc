@@ -481,6 +481,30 @@ std::string Esp32Music::GetDownloadResult()
     return last_downloaded_data_;
 }
 
+bool Esp32Music::PlayUrl(const std::string &music_url, const std::string &song_name)
+{
+    current_music_url_ = music_url;
+    current_song_name_ = song_name.empty() ? "在线音频" : song_name;
+    song_name_displayed_ = false;
+
+    // URL playback has no lyric side channel. Stop an earlier lyric task so
+    // stale lyrics from the previous song cannot remain on screen.
+    is_lyric_running_ = false;
+    if (lyric_thread_.joinable())
+    {
+        lyric_thread_.join();
+    }
+    current_lyric_url_.clear();
+    current_lyric_index_ = -1;
+    {
+        std::lock_guard<std::mutex> lock(lyrics_mutex_);
+        lyrics_.clear();
+    }
+
+    ESP_LOGI(TAG, "Starting approved URL playback: %s", current_song_name_.c_str());
+    return StartStreaming(current_music_url_);
+}
+
 // 开始流式播放
 bool Esp32Music::StartStreaming(const std::string &music_url)
 {
@@ -524,12 +548,14 @@ bool Esp32Music::StartStreaming(const std::string &music_url)
     cfg.thread_name = "audio_stream";
     esp_pthread_set_cfg(&cfg);
 
-    // 开始下载线程
+    // Publish both running flags before either thread starts. Otherwise the
+    // download thread can run immediately and mistake the not-yet-set playback
+    // flag for a cancellation.
     is_downloading_ = true;
+    is_playing_ = true;
     download_thread_ = std::thread(&Esp32Music::DownloadAudioStream, this, music_url);
 
     // 开始播放线程（会等待缓冲区有足够数据）
-    is_playing_ = true;
     play_thread_ = std::thread(&Esp32Music::PlayAudioStream, this);
 
     ESP_LOGI(TAG, "Streaming threads started successfully");
@@ -644,29 +670,76 @@ void Esp32Music::DownloadAudioStream(const std::string &music_url)
 {
     ESP_LOGD(TAG, "Starting audio stream download from: %s", music_url.c_str());
 
+    auto finish_download = [this]() {
+        is_downloading_ = false;
+        buffer_cv_.notify_all();
+    };
+
     // 验证URL有效性
     if (music_url.empty() || music_url.find("http") != 0)
     {
         ESP_LOGE(TAG, "Invalid URL format: %s", music_url.c_str());
-        is_downloading_ = false;
+        finish_download();
         return;
     }
 
-    auto network = Board::GetInstance().GetNetwork();
-    auto http = network->CreateHttp(0);
-
-    // 设置基本请求头
-    http->SetHeader("User-Agent", "ESP32-Music-Player/1.0");
-    http->SetHeader("Accept", "*/*");
-    http->SetHeader("Range", "bytes=0-"); // 支持断点续传
-
-    // 添加ESP32认证头
-    add_auth_headers(http.get());
-
-    if (!http->Open("GET", music_url))
+    // The tool call is normally delivered while Xiaozhi is still speaking its
+    // response. Starting another TLS connection at that point competes with
+    // TTS for the codec and scarce internal memory, so wait for TTS to finish.
+    bool waited_for_tts = false;
+    while (is_downloading_ && is_playing_ &&
+           Application::GetInstance().GetDeviceState() == kDeviceStateSpeaking)
     {
-        ESP_LOGE(TAG, "Failed to connect to music stream URL");
-        is_downloading_ = false;
+        if (!waited_for_tts)
+        {
+            ESP_LOGI(TAG, "Waiting for TTS to finish before downloading music");
+            waited_for_tts = true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!is_downloading_ || !is_playing_)
+    {
+        ESP_LOGI(TAG, "Music download cancelled before connection started");
+        finish_download();
+        return;
+    }
+    if (waited_for_tts)
+    {
+        ESP_LOGI(TAG, "TTS finished; starting music download");
+    }
+
+    auto network = Board::GetInstance().GetNetwork();
+    std::unique_ptr<Http> http;
+    constexpr int kMaxConnectAttempts = 3;
+    bool connected = false;
+    for (int attempt = 1; attempt <= kMaxConnectAttempts && is_downloading_ && is_playing_; ++attempt)
+    {
+        http = network->CreateHttp(0);
+
+        // 设置基本请求头
+        http->SetHeader("User-Agent", "ESP32-Music-Player/1.0");
+        http->SetHeader("Accept", "*/*");
+        http->SetHeader("Range", "bytes=0-"); // 支持断点续传
+
+        // Do not send device identifiers or private-service authentication
+        // headers to arbitrary media hosts.
+        ESP_LOGI(TAG, "Connecting to music stream (attempt %d/%d)", attempt, kMaxConnectAttempts);
+        if (http->Open("GET", music_url))
+        {
+            connected = true;
+            break;
+        }
+
+        ESP_LOGW(TAG, "Music stream connection attempt %d/%d failed", attempt, kMaxConnectAttempts);
+        if (attempt < kMaxConnectAttempts)
+        {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
+    if (!connected)
+    {
+        ESP_LOGE(TAG, "Failed to connect to music stream URL after %d attempts", kMaxConnectAttempts);
+        finish_download();
         return;
     }
 
@@ -675,7 +748,7 @@ void Esp32Music::DownloadAudioStream(const std::string &music_url)
     { // 206 for partial content
         ESP_LOGE(TAG, "HTTP GET failed with status code: %d", status_code);
         http->Close();
-        is_downloading_ = false;
+        finish_download();
         return;
     }
 
@@ -807,14 +880,6 @@ void Esp32Music::PlayAudioStream()
     last_frame_time_ms_ = 0;
     total_frames_decoded_ = 0;
 
-    auto codec = Board::GetInstance().GetAudioCodec();
-    if (!codec || !codec->output_enabled())
-    {
-        ESP_LOGE(TAG, "Audio codec not available or not enabled");
-        is_playing_ = false;
-        return;
-    }
-
     if (!mp3_decoder_initialized_)
     {
         ESP_LOGE(TAG, "MP3 decoder not initialized");
@@ -826,7 +891,56 @@ void Esp32Music::PlayAudioStream()
     {
         std::unique_lock<std::mutex> lock(buffer_mutex_);
         buffer_cv_.wait(lock, [this]
-                        { return buffer_size_ >= MIN_BUFFER_SIZE || (!is_downloading_ && !audio_buffer_.empty()); });
+                        { return buffer_size_ >= MIN_BUFFER_SIZE || !is_downloading_ || !is_playing_; });
+        if (!is_playing_ || audio_buffer_.empty())
+        {
+            ESP_LOGE(TAG, "No audio data available for playback");
+            is_playing_ = false;
+            return;
+        }
+    }
+
+    // Wait until the assistant has finished speaking, then close the listening
+    // session before taking ownership of the speaker for music playback.
+    auto &app = Application::GetInstance();
+    bool requested_idle = false;
+    while (is_playing_)
+    {
+        DeviceState state = app.GetDeviceState();
+        if (state == kDeviceStateIdle)
+        {
+            break;
+        }
+        if (state == kDeviceStateListening && !requested_idle)
+        {
+            ESP_LOGI(TAG, "Closing listening session before music playback");
+            app.ToggleChatState();
+            requested_idle = true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!is_playing_)
+    {
+        return;
+    }
+
+    auto codec = Board::GetInstance().GetAudioCodec();
+    if (!codec)
+    {
+        ESP_LOGE(TAG, "Audio codec not available");
+        is_playing_ = false;
+        return;
+    }
+    if (!codec->output_enabled())
+    {
+        ESP_LOGI(TAG, "Enabling audio output for music playback");
+        codec->EnableOutput(true);
+    }
+    if (!codec->output_enabled())
+    {
+        ESP_LOGE(TAG, "Failed to enable audio output for music playback");
+        is_playing_ = false;
+        return;
     }
 
     ESP_LOGI(TAG, "小智开源音乐固件qq交流群:826072986");

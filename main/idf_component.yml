@@ -31,9 +31,14 @@ dependencies:
   esp_lvgl_port: ~2.6.0
   espressif/esp_io_expander_tca95xx_16bit: ^2.0.0
   espressif2022/image_player: ^1.1.1
-  espressif2022/esp_emote_gfx: ^1.0.0
+  # This branch uses the label/font APIs from v1.2. The matching legacy
+  # emoji_normal assets are vendored under boards/echoear/assets.
+  espressif2022/esp_emote_gfx: "==1.2.0~1"
   espressif/adc_mic: ^0.2.0
-  espressif/esp_mmap_assets: ">=1.2"
+  # v2 changes generated header names from the asset directory to the
+  # partition label; v1.3.1~1 is the first release with IMPORT_INC_PATH,
+  # which this branch uses for mmap_generate_emoji_normal.h.
+  espressif/esp_mmap_assets: "==1.3.1~1"
   txp666/otto-emoji-gif-component: ~1.0.2
   espressif/adc_battery_estimation: ^0.2.0
 

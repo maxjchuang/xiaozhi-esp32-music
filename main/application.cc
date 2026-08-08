@@ -111,6 +111,10 @@ void Application::CheckNewVersion(Ota &ota)
 
         if (ota.HasNewVersion())
         {
+#ifdef CONFIG_DISABLE_AUTO_OTA
+            ESP_LOGW(TAG, "Automatic OTA upgrade disabled; keeping custom firmware (available: %s)",
+                     ota.GetFirmwareVersion().c_str());
+#else
             Alert(Lang::Strings::OTA_UPGRADE, Lang::Strings::UPGRADING, "happy", Lang::Sounds::P3_UPGRADE);
 
             vTaskDelay(pdMS_TO_TICKS(3000));
@@ -152,6 +156,7 @@ void Application::CheckNewVersion(Ota &ota)
                 Reboot();
                 return; // This line will never be reached after reboot
             }
+#endif
         }
 
         // No new version, mark the current version as valid

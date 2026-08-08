@@ -6,6 +6,13 @@ config OTA_URL
     help
         The application will access this URL to check for new firmwares and server address.
 
+config DISABLE_AUTO_OTA
+    bool "Disable automatic firmware upgrades"
+    default n
+    help
+        Continue checking the OTA service for activation and protocol settings,
+        but do not replace this build when a newer official firmware is offered.
+
 
 choice
     prompt "Default Language"

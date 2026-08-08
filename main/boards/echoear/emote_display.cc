@@ -27,6 +27,8 @@ static gfx_obj_t* obj_anim_eye = nullptr;
 static gfx_obj_t* obj_anim_mic = nullptr;
 static gfx_obj_t* obj_img_icon = nullptr;
 static gfx_image_dsc_t icon_img_dsc;
+static gfx_font_t font_tips = nullptr;
+static gfx_font_t font_time = nullptr;
 
 // Track current icon to determine when to show time
 static int current_icon_type = MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN;
@@ -133,15 +135,24 @@ static void InitializeEyeAnimation(gfx_handle_t engine_handle, mmap_assets_handl
     gfx_anim_start(obj_anim_eye);
 }
 
-static void InitializeFont(gfx_handle_t engine_handle, mmap_assets_handle_t assets_handle)
+static gfx_font_t CreateFont(mmap_assets_handle_t assets_handle, uint16_t font_size)
 {
-    gfx_font_t font;
     gfx_label_cfg_t font_cfg = {
-        .name = "DejaVuSans.ttf",
+        .name = "KaiTi.ttf",
         .mem = mmap_assets_get_mem(assets_handle, MMAP_EMOJI_NORMAL_KAITI_TTF),
         .mem_size = static_cast<size_t>(mmap_assets_get_size(assets_handle, MMAP_EMOJI_NORMAL_KAITI_TTF)),
+        .font_size = font_size,
     };
-    gfx_label_new_font(engine_handle, &font_cfg, &font);
+
+    gfx_font_t font = nullptr;
+    ESP_ERROR_CHECK(gfx_label_new_font(&font_cfg, &font));
+    return font;
+}
+
+static void InitializeFonts(mmap_assets_handle_t assets_handle)
+{
+    font_tips = CreateFont(assets_handle, 20);
+    font_time = CreateFont(assets_handle, 40);
 
     ESP_LOGI(TAG, "stack: %d", uxTaskGetStackHighWaterMark(nullptr));
 }
@@ -153,7 +164,7 @@ static void InitializeLabels(gfx_handle_t engine_handle)
     gfx_obj_align(obj_label_tips, GFX_ALIGN_TOP_MID, 0, 45);
     gfx_obj_set_size(obj_label_tips, 160, 40);
     gfx_label_set_text(obj_label_tips, "启动中...");
-    gfx_label_set_font_size(obj_label_tips, 20);
+    gfx_label_set_font(obj_label_tips, font_tips);
     gfx_label_set_color(obj_label_tips, GFX_COLOR_HEX(0xFFFFFF));
     gfx_label_set_text_align(obj_label_tips, GFX_TEXT_ALIGN_LEFT);
     gfx_label_set_long_mode(obj_label_tips, GFX_LABEL_LONG_SCROLL);
@@ -165,7 +176,7 @@ static void InitializeLabels(gfx_handle_t engine_handle)
     gfx_obj_align(obj_label_time, GFX_ALIGN_TOP_MID, 0, 30);
     gfx_obj_set_size(obj_label_time, 160, 50);
     gfx_label_set_text(obj_label_time, "--:--");
-    gfx_label_set_font_size(obj_label_time, 40);
+    gfx_label_set_font(obj_label_time, font_time);
     gfx_label_set_color(obj_label_time, GFX_COLOR_HEX(0xFFFFFF));
     gfx_label_set_text_align(obj_label_time, GFX_TEXT_ALIGN_CENTER);
 }
@@ -223,7 +234,7 @@ EmoteEngine::EmoteEngine(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t
 
     // Initialize all UI components
     InitializeEyeAnimation(engine_handle_, assets_handle_);
-    InitializeFont(engine_handle_, assets_handle_);
+    InitializeFonts(assets_handle_);
     InitializeLabels(engine_handle_);
     InitializeMicAnimation(engine_handle_, assets_handle_);
     InitializeIcon(engine_handle_, assets_handle_);
@@ -243,6 +254,16 @@ EmoteEngine::~EmoteEngine()
     if (engine_handle_) {
         gfx_emote_deinit(engine_handle_);
         engine_handle_ = nullptr;
+    }
+
+    if (font_tips) {
+        gfx_label_delete_font(font_tips);
+        font_tips = nullptr;
+    }
+
+    if (font_time) {
+        gfx_label_delete_font(font_time);
+        font_time = nullptr;
     }
 
     if (assets_handle_) {

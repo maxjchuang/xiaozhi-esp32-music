@@ -19,6 +19,77 @@
  #define TAG "MCP"
  
  #define DEFAULT_TOOLCALL_STACK_SIZE 6144
+
+ namespace {
+
+ bool IsPrivateAudioProxyUrl(const std::string& url) {
+     constexpr char kPrefix[] = "http://";
+     constexpr char kStreamMarker[] = ":8765/stream/";
+     if (url.compare(0, sizeof(kPrefix) - 1, kPrefix) != 0 || url.size() > 2048) {
+         return false;
+     }
+
+     const auto marker = url.find(kStreamMarker, sizeof(kPrefix) - 1);
+     if (marker == std::string::npos ||
+         url.find(kStreamMarker, marker + 1) != std::string::npos) {
+         return false;
+     }
+
+     const auto token = url.substr(marker + sizeof(kStreamMarker) - 1);
+     if (token.size() < 16 || token.size() > 128 ||
+         !std::all_of(token.begin(), token.end(), [](unsigned char ch) {
+             return std::isalnum(ch) || ch == '-' || ch == '_';
+         })) {
+         return false;
+     }
+
+     const auto address = url.substr(sizeof(kPrefix) - 1, marker - (sizeof(kPrefix) - 1));
+     int octets[4] = {};
+     size_t start = 0;
+     for (size_t index = 0; index < 4; ++index) {
+         const auto end = index == 3 ? address.size() : address.find('.', start);
+         if (end == std::string::npos || end <= start || end - start > 3) {
+             return false;
+         }
+         int value = 0;
+         for (size_t cursor = start; cursor < end; ++cursor) {
+             const auto ch = static_cast<unsigned char>(address[cursor]);
+             if (!std::isdigit(ch)) {
+                 return false;
+             }
+             value = value * 10 + (ch - '0');
+         }
+         if (value > 255) {
+             return false;
+         }
+         octets[index] = value;
+         start = end + 1;
+     }
+
+     return octets[0] == 10 ||
+            (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) ||
+            (octets[0] == 192 && octets[1] == 168);
+ }
+
+ bool IsApprovedAudioUrl(const std::string& url) {
+     constexpr char kApprovedPrefix[] = "https://dl.espressif.com/";
+     if (url.empty() || url.size() > 2048 ||
+         (url.compare(0, sizeof(kApprovedPrefix) - 1, kApprovedPrefix) != 0 &&
+          !IsPrivateAudioProxyUrl(url))) {
+         return false;
+     }
+     return std::none_of(url.begin(), url.end(), [](unsigned char ch) {
+         return ch < 0x20 || ch == 0x7f;
+     });
+ }
+
+ bool ContainsControlCharacter(const std::string& value) {
+     return std::any_of(value.begin(), value.end(), [](unsigned char ch) {
+         return ch < 0x20 || ch == 0x7f;
+     });
+ }
+
+ }  // namespace
  
  McpServer::McpServer() {
  }
@@ -107,27 +178,40 @@
  
      auto music = board.GetMusic();
      if (music) {
-         AddTool("self.music.play_song",
-             "播放指定的歌曲。当用户要求播放音乐时使用此工具，会自动获取歌曲详情并开始流式播放。\n"
+         AddTool("self.online_music.play_music",
+             "播放由外部 MCP 解析得到的音频。只允许乐鑫官方测试音频或本机 MCP 生成的短期局域网代理地址。\n"
              "参数:\n"
-             "  `song_name`: 要播放的歌曲名称（必需）。\n"
-             "  `artist_name`: 要播放的歌曲艺术家名称（可选，默认为空字符串）。\n"
+             "  `play_type`: 必须为 'url'。\n"
+             "  `url`: 要播放的 HTTP(S) MP3 地址。\n"
+             "  `url_song_name`: 屏幕显示的歌曲名称。\n"
              "返回:\n"
-             "  播放状态信息，不需确认，立刻播放歌曲。",
+             "  播放状态信息。",
              PropertyList({
-                 Property("song_name", kPropertyTypeString),//歌曲名称（必需）
-                 Property("artist_name", kPropertyTypeString, "")//艺术家名称（可选，默认为空字符串）
+                 Property("play_type", kPropertyTypeString, "url"),
+                 Property("url", kPropertyTypeString),
+                 Property("url_song_name", kPropertyTypeString, "在线音频")
              }),
              [music](const PropertyList& properties) -> ReturnValue {
-                 auto song_name = properties["song_name"].value<std::string>();
-                 auto artist_name = properties["artist_name"].value<std::string>();
-                 
-                 if (!music->Download(song_name, artist_name)) {
-                     return "{\"success\": false, \"message\": \"获取音乐资源失败\"}";
+                 auto play_type = properties["play_type"].value<std::string>();
+                 auto url = properties["url"].value<std::string>();
+                 auto song_name = properties["url_song_name"].value<std::string>();
+
+                 std::transform(play_type.begin(), play_type.end(), play_type.begin(), [](unsigned char ch) {
+                     return static_cast<char>(std::tolower(ch));
+                 });
+                 if (play_type != "url") {
+                     return "{\"success\": false, \"message\": \"play_type 必须为 url\"}";
                  }
-                 auto download_result = music->GetDownloadResult();
-                 ESP_LOGI(TAG, "Music details result: %s", download_result.c_str());
-                 return "{\"success\": true, \"message\": \"音乐开始播放\"}";
+                 if (!IsApprovedAudioUrl(url)) {
+                     return "{\"success\": false, \"message\": \"仅允许乐鑫官方测试音频或安全的局域网音乐代理\"}";
+                 }
+                 if (song_name.size() > 192 || ContainsControlCharacter(song_name)) {
+                     return "{\"success\": false, \"message\": \"歌曲名称无效\"}";
+                 }
+                 if (!music->PlayUrl(url, song_name)) {
+                     return "{\"success\": false, \"message\": \"启动音频流失败\"}";
+                 }
+                 return "{\"success\": true, \"message\": \"音频开始播放\"}";
              });
  
          AddTool("self.music.set_display_mode",
