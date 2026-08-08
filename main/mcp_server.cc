@@ -23,33 +23,55 @@
  namespace {
 
  bool IsPrivateAudioProxyUrl(const std::string& url) {
-     constexpr char kPrefix[] = "http://192.168.";
-     constexpr char kSuffix[] = ":8765/official-test.mp3";
-     if (url.compare(0, sizeof(kPrefix) - 1, kPrefix) != 0 ||
-         url.size() <= (sizeof(kPrefix) - 1) + (sizeof(kSuffix) - 1) ||
-         url.compare(url.size() - (sizeof(kSuffix) - 1), sizeof(kSuffix) - 1, kSuffix) != 0) {
+     constexpr char kPrefix[] = "http://";
+     constexpr char kStreamMarker[] = ":8765/stream/";
+     if (url.compare(0, sizeof(kPrefix) - 1, kPrefix) != 0 || url.size() > 2048) {
          return false;
      }
 
-     const auto address_part = url.substr(
-         sizeof(kPrefix) - 1,
-         url.size() - (sizeof(kPrefix) - 1) - (sizeof(kSuffix) - 1));
-     const auto dot = address_part.find('.');
-     if (dot == std::string::npos || address_part.find('.', dot + 1) != std::string::npos) {
+     const auto marker = url.find(kStreamMarker, sizeof(kPrefix) - 1);
+     if (marker == std::string::npos ||
+         url.find(kStreamMarker, marker + 1) != std::string::npos) {
          return false;
      }
-     auto is_valid_octet = [](const std::string& value) {
-         if (value.empty() || value.size() > 3 ||
-             !std::all_of(value.begin(), value.end(), [](unsigned char ch) { return std::isdigit(ch); })) {
+
+     const auto token = url.substr(marker + sizeof(kStreamMarker) - 1);
+     if (token.size() < 16 || token.size() > 128 ||
+         !std::all_of(token.begin(), token.end(), [](unsigned char ch) {
+             return std::isalnum(ch) || ch == '-' || ch == '_';
+         })) {
+         return false;
+     }
+
+     const auto address = url.substr(sizeof(kPrefix) - 1, marker - (sizeof(kPrefix) - 1));
+     int octets[4] = {};
+     size_t start = 0;
+     for (size_t index = 0; index < 4; ++index) {
+         const auto end = index == 3 ? address.size() : address.find('.', start);
+         if (end == std::string::npos || end <= start || end - start > 3) {
              return false;
          }
-         return std::stoi(value) <= 255;
-     };
-     return is_valid_octet(address_part.substr(0, dot)) &&
-            is_valid_octet(address_part.substr(dot + 1));
+         int value = 0;
+         for (size_t cursor = start; cursor < end; ++cursor) {
+             const auto ch = static_cast<unsigned char>(address[cursor]);
+             if (!std::isdigit(ch)) {
+                 return false;
+             }
+             value = value * 10 + (ch - '0');
+         }
+         if (value > 255) {
+             return false;
+         }
+         octets[index] = value;
+         start = end + 1;
+     }
+
+     return octets[0] == 10 ||
+            (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) ||
+            (octets[0] == 192 && octets[1] == 168);
  }
 
- bool IsApprovedTestAudioUrl(const std::string& url) {
+ bool IsApprovedAudioUrl(const std::string& url) {
      constexpr char kApprovedPrefix[] = "https://dl.espressif.com/";
      if (url.empty() || url.size() > 2048 ||
          (url.compare(0, sizeof(kApprovedPrefix) - 1, kApprovedPrefix) != 0 &&
@@ -157,7 +179,7 @@
      auto music = board.GetMusic();
      if (music) {
          AddTool("self.online_music.play_music",
-             "播放由外部 MCP 解析得到的音频直链。当前测试阶段只允许乐鑫官方测试音频或本机 MCP 的固定局域网代理。\n"
+             "播放由外部 MCP 解析得到的音频。只允许乐鑫官方测试音频或本机 MCP 生成的短期局域网代理地址。\n"
              "参数:\n"
              "  `play_type`: 必须为 'url'。\n"
              "  `url`: 要播放的 HTTP(S) MP3 地址。\n"
@@ -180,8 +202,8 @@
                  if (play_type != "url") {
                      return "{\"success\": false, \"message\": \"play_type 必须为 url\"}";
                  }
-                 if (!IsApprovedTestAudioUrl(url)) {
-                     return "{\"success\": false, \"message\": \"当前仅允许乐鑫官方测试音频或固定局域网代理\"}";
+                 if (!IsApprovedAudioUrl(url)) {
+                     return "{\"success\": false, \"message\": \"仅允许乐鑫官方测试音频或安全的局域网音乐代理\"}";
                  }
                  if (song_name.size() > 192 || ContainsControlCharacter(song_name)) {
                      return "{\"success\": false, \"message\": \"歌曲名称无效\"}";
@@ -189,7 +211,7 @@
                  if (!music->PlayUrl(url, song_name)) {
                      return "{\"success\": false, \"message\": \"启动音频流失败\"}";
                  }
-                 return "{\"success\": true, \"message\": \"测试音频开始播放\"}";
+                 return "{\"success\": true, \"message\": \"音频开始播放\"}";
              });
  
          AddTool("self.music.set_display_mode",
