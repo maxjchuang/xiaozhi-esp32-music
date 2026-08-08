@@ -95,6 +95,7 @@ public:
     virtual bool Download(const std::string& song_name, const std::string& artist_name) override;
   
     virtual std::string GetDownloadResult() override;
+    virtual bool PlayUrl(const std::string& music_url, const std::string& song_name) override;
     
     // 新增方法
     virtual bool StartStreaming(const std::string& music_url) override;

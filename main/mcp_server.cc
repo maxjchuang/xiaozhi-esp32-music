@@ -19,6 +19,26 @@
  #define TAG "MCP"
  
  #define DEFAULT_TOOLCALL_STACK_SIZE 6144
+
+ namespace {
+
+ bool IsApprovedTestAudioUrl(const std::string& url) {
+     constexpr char kApprovedPrefix[] = "https://dl.espressif.com/";
+     if (url.empty() || url.size() > 2048 || url.compare(0, sizeof(kApprovedPrefix) - 1, kApprovedPrefix) != 0) {
+         return false;
+     }
+     return std::none_of(url.begin(), url.end(), [](unsigned char ch) {
+         return ch < 0x20 || ch == 0x7f;
+     });
+ }
+
+ bool ContainsControlCharacter(const std::string& value) {
+     return std::any_of(value.begin(), value.end(), [](unsigned char ch) {
+         return ch < 0x20 || ch == 0x7f;
+     });
+ }
+
+ }  // namespace
  
  McpServer::McpServer() {
  }
@@ -107,27 +127,40 @@
  
      auto music = board.GetMusic();
      if (music) {
-         AddTool("self.music.play_song",
-             "播放指定的歌曲。当用户要求播放音乐时使用此工具，会自动获取歌曲详情并开始流式播放。\n"
+         AddTool("self.online_music.play_music",
+             "播放由外部 MCP 解析得到的 HTTPS 音频直链。当前测试阶段只允许乐鑫官方测试音频域名。\n"
              "参数:\n"
-             "  `song_name`: 要播放的歌曲名称（必需）。\n"
-             "  `artist_name`: 要播放的歌曲艺术家名称（可选，默认为空字符串）。\n"
+             "  `play_type`: 必须为 'url'。\n"
+             "  `url`: 要播放的 HTTPS MP3 地址。\n"
+             "  `url_song_name`: 屏幕显示的歌曲名称。\n"
              "返回:\n"
-             "  播放状态信息，不需确认，立刻播放歌曲。",
+             "  播放状态信息。",
              PropertyList({
-                 Property("song_name", kPropertyTypeString),//歌曲名称（必需）
-                 Property("artist_name", kPropertyTypeString, "")//艺术家名称（可选，默认为空字符串）
+                 Property("play_type", kPropertyTypeString, "url"),
+                 Property("url", kPropertyTypeString),
+                 Property("url_song_name", kPropertyTypeString, "在线音频")
              }),
              [music](const PropertyList& properties) -> ReturnValue {
-                 auto song_name = properties["song_name"].value<std::string>();
-                 auto artist_name = properties["artist_name"].value<std::string>();
-                 
-                 if (!music->Download(song_name, artist_name)) {
-                     return "{\"success\": false, \"message\": \"获取音乐资源失败\"}";
+                 auto play_type = properties["play_type"].value<std::string>();
+                 auto url = properties["url"].value<std::string>();
+                 auto song_name = properties["url_song_name"].value<std::string>();
+
+                 std::transform(play_type.begin(), play_type.end(), play_type.begin(), [](unsigned char ch) {
+                     return static_cast<char>(std::tolower(ch));
+                 });
+                 if (play_type != "url") {
+                     return "{\"success\": false, \"message\": \"play_type 必须为 url\"}";
                  }
-                 auto download_result = music->GetDownloadResult();
-                 ESP_LOGI(TAG, "Music details result: %s", download_result.c_str());
-                 return "{\"success\": true, \"message\": \"音乐开始播放\"}";
+                 if (!IsApprovedTestAudioUrl(url)) {
+                     return "{\"success\": false, \"message\": \"当前仅允许 https://dl.espressif.com/ 下的测试音频\"}";
+                 }
+                 if (song_name.size() > 192 || ContainsControlCharacter(song_name)) {
+                     return "{\"success\": false, \"message\": \"歌曲名称无效\"}";
+                 }
+                 if (!music->PlayUrl(url, song_name)) {
+                     return "{\"success\": false, \"message\": \"启动音频流失败\"}";
+                 }
+                 return "{\"success\": true, \"message\": \"测试音频开始播放\"}";
              });
  
          AddTool("self.music.set_display_mode",

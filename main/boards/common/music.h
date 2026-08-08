@@ -9,6 +9,7 @@ public:
     
     virtual bool Download(const std::string& song_name, const std::string& artist_name = "") = 0;
     virtual std::string GetDownloadResult() = 0;
+    virtual bool PlayUrl(const std::string& music_url, const std::string& song_name) = 0;
     
     // 新增流式播放相关方法
     virtual bool StartStreaming(const std::string& music_url) = 0;
@@ -18,4 +19,4 @@ public:
     virtual int16_t* GetAudioData() = 0;
 };
 
-#endif // MUSIC_H 
+#endif // MUSIC_H

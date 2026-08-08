@@ -481,6 +481,30 @@ std::string Esp32Music::GetDownloadResult()
     return last_downloaded_data_;
 }
 
+bool Esp32Music::PlayUrl(const std::string &music_url, const std::string &song_name)
+{
+    current_music_url_ = music_url;
+    current_song_name_ = song_name.empty() ? "在线音频" : song_name;
+    song_name_displayed_ = false;
+
+    // URL playback has no lyric side channel. Stop an earlier lyric task so
+    // stale lyrics from the previous song cannot remain on screen.
+    is_lyric_running_ = false;
+    if (lyric_thread_.joinable())
+    {
+        lyric_thread_.join();
+    }
+    current_lyric_url_.clear();
+    current_lyric_index_ = -1;
+    {
+        std::lock_guard<std::mutex> lock(lyrics_mutex_);
+        lyrics_.clear();
+    }
+
+    ESP_LOGI(TAG, "Starting approved URL playback: %s", current_song_name_.c_str());
+    return StartStreaming(current_music_url_);
+}
+
 // 开始流式播放
 bool Esp32Music::StartStreaming(const std::string &music_url)
 {
@@ -660,8 +684,8 @@ void Esp32Music::DownloadAudioStream(const std::string &music_url)
     http->SetHeader("Accept", "*/*");
     http->SetHeader("Range", "bytes=0-"); // 支持断点续传
 
-    // 添加ESP32认证头
-    add_auth_headers(http.get());
+    // Do not send device identifiers or private-service authentication
+    // headers to arbitrary media hosts.
 
     if (!http->Open("GET", music_url))
     {
