@@ -5,6 +5,7 @@
             "name": "echoear",
             "sdkconfig_append": [
                 "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
+                "CONFIG_DISABLE_AUTO_OTA=y",
                 "CONFIG_GFX_FONT_FREETYPE_SUPPORT=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v1/16m_echoear.csv\""
