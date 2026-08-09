@@ -75,6 +75,22 @@ bool AfeWakeWord::Initialize(AudioCodec* codec) {
     
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
+    if (afe_data_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create AFE wake word instance");
+        return false;
+    }
+
+#if CONFIG_AFE_WAKE_WORD_CUSTOM_THRESHOLD
+    constexpr float kWakeWordThreshold = CONFIG_AFE_WAKE_WORD_THRESHOLD_PERCENT / 100.0f;
+    int threshold_result = afe_iface_->set_wakenet_threshold(afe_data_, 1, kWakeWordThreshold);
+    if (threshold_result < 0) {
+        ESP_LOGE(TAG, "Failed to set WakeNet threshold to %.2f", kWakeWordThreshold);
+        return false;
+    }
+    ESP_LOGI(TAG, "WakeNet threshold set to %.2f", kWakeWordThreshold);
+#else
+    ESP_LOGI(TAG, "Using WakeNet model default threshold");
+#endif
 
     xTaskCreate([](void* arg) {
         auto this_ = (AfeWakeWord*)arg;

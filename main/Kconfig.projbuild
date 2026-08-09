@@ -419,6 +419,21 @@ config USE_AFE_WAKE_WORD
     help
         需要 ESP32 S3 与 PSRAM 支持
 
+config AFE_WAKE_WORD_CUSTOM_THRESHOLD
+    bool "Override AFE WakeNet Detection Threshold"
+    default n
+    depends on USE_AFE_WAKE_WORD
+    help
+        Override the detection threshold embedded in the WakeNet model.
+
+config AFE_WAKE_WORD_THRESHOLD_PERCENT
+    int "AFE WakeNet Detection Threshold (%)"
+    default 60
+    range 40 99
+    depends on AFE_WAKE_WORD_CUSTOM_THRESHOLD
+    help
+        Lower values improve recall but may increase false wake-ups.
+
 config USE_CUSTOM_WAKE_WORD
     bool "Enable Custom Wake Word Detection"
     default n
@@ -458,7 +473,7 @@ config USE_AUDIO_PROCESSOR
 config USE_DEVICE_AEC
     bool "Enable Device-Side AEC"
     default n
-        depends on USE_AUDIO_PROCESSOR && (BOARD_TYPE_ESP_BOX_3 || BOARD_TYPE_ESP_BOX || BOARD_TYPE_ESP_BOX_LITE || BOARD_TYPE_LICHUANG_DEV || BOARD_TYPE_ESP32S3_KORVO2_V3 || BOARD_TYPE_ESP32S3_Touch_AMOLED_1_75 || BOARD_TYPE_ESP32S3_Touch_AMOLED_2_06 || BOARD_TYPE_ESP32P4_WIFI6_Touch_LCD_4B || BOARD_TYPE_ESP32P4_WIFI6_Touch_LCD_XC)
+        depends on USE_AUDIO_PROCESSOR && (BOARD_TYPE_ESP_BOX_3 || BOARD_TYPE_ESP_BOX || BOARD_TYPE_ESP_BOX_LITE || BOARD_TYPE_LICHUANG_DEV || BOARD_TYPE_ESP32S3_KORVO2_V3 || BOARD_TYPE_ESP32S3_Touch_AMOLED_1_75 || BOARD_TYPE_ESP32S3_Touch_AMOLED_2_06 || BOARD_TYPE_ESP32P4_WIFI6_Touch_LCD_4B || BOARD_TYPE_ESP32P4_WIFI6_Touch_LCD_XC || BOARD_TYPE_ECHOEAR)
     help
         因为性能不够，不建议和微信聊天界面风格同时开启
 

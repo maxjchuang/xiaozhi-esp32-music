@@ -8,7 +8,13 @@
                 "CONFIG_DISABLE_AUTO_OTA=y",
                 "CONFIG_GFX_FONT_FREETYPE_SUPPORT=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM=y",
-                "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v1/16m_echoear.csv\""
+                "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v1/16m_echoear.csv\"",
+                "CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n",
+                "CONFIG_SR_WN_WN9_NIHAOMIAOBAN_TTS2=n",
+                "CONFIG_SR_WN_WN9_XIAOAITONGXUE=y",
+                "CONFIG_AFE_WAKE_WORD_CUSTOM_THRESHOLD=y",
+                "CONFIG_AFE_WAKE_WORD_THRESHOLD_PERCENT=60",
+                "CONFIG_USE_DEVICE_AEC=y"
             ]
         }
     ]
