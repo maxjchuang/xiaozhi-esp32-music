@@ -1249,6 +1249,11 @@ void Esp32Music::PlayAudioStream()
     // 停止播放标志
     is_playing_ = false;
 
+    // Natural playback completion does not pass through StopStreaming().
+    // Restore the speaker clock here so the wake-word reference path and
+    // subsequent TTS playback return to the codec's original sample rate.
+    ResetSampleRate();
+
     // 只在频谱显示模式下才停止FFT显示
     if (display_mode_ == DISPLAY_MODE_SPECTRUM)
     {
