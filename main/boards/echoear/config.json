@@ -13,7 +13,8 @@
                 "CONFIG_SR_WN_WN9_NIHAOMIAOBAN_TTS2=n",
                 "CONFIG_SR_WN_WN9_XIAOAITONGXUE=y",
                 "CONFIG_AFE_WAKE_WORD_CUSTOM_THRESHOLD=y",
-                "CONFIG_AFE_WAKE_WORD_THRESHOLD_PERCENT=60"
+                "CONFIG_AFE_WAKE_WORD_THRESHOLD_PERCENT=60",
+                "CONFIG_USE_DEVICE_AEC=y"
             ]
         }
     ]
