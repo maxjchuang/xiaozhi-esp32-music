@@ -419,6 +419,21 @@ config USE_AFE_WAKE_WORD
     help
         需要 ESP32 S3 与 PSRAM 支持
 
+config AFE_WAKE_WORD_CUSTOM_THRESHOLD
+    bool "Override AFE WakeNet Detection Threshold"
+    default n
+    depends on USE_AFE_WAKE_WORD
+    help
+        Override the detection threshold embedded in the WakeNet model.
+
+config AFE_WAKE_WORD_THRESHOLD_PERCENT
+    int "AFE WakeNet Detection Threshold (%)"
+    default 60
+    range 40 99
+    depends on AFE_WAKE_WORD_CUSTOM_THRESHOLD
+    help
+        Lower values improve recall but may increase false wake-ups.
+
 config USE_CUSTOM_WAKE_WORD
     bool "Enable Custom Wake Word Detection"
     default n
