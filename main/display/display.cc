@@ -195,6 +195,10 @@ void Display::UpdateStatusBar(bool update_all) {
 }
 
 
+void Display::SetBehavior(const DisplayBehaviorRequest& request) {
+    (void)request;
+}
+
 void Display::SetEmotion(const char* emotion) {
     struct Emotion {
         const char* icon;

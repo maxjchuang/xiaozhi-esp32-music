@@ -31,6 +31,32 @@ static const char *const STATE_STRINGS[] = {
     "fatal_error",
     "invalid_state"};
 
+static DisplayBehavior GetDisplayBehavior(DeviceState state)
+{
+    switch (state)
+    {
+    case kDeviceStateUnknown:
+    case kDeviceStateStarting:
+    case kDeviceStateUpgrading:
+        return DisplayBehavior::kStartup;
+    case kDeviceStateWifiConfiguring:
+    case kDeviceStateConnecting:
+    case kDeviceStateActivating:
+        return DisplayBehavior::kConnecting;
+    case kDeviceStateIdle:
+        return DisplayBehavior::kIdle;
+    case kDeviceStateListening:
+        return DisplayBehavior::kListening;
+    case kDeviceStateSpeaking:
+    case kDeviceStateAudioTesting:
+        return DisplayBehavior::kSpeaking;
+    case kDeviceStateFatalError:
+        return DisplayBehavior::kFatalError;
+    }
+
+    return DisplayBehavior::kStartup;
+}
+
 Application::Application()
 {
     event_group_ = xEventGroupCreate();
@@ -732,6 +758,13 @@ void Application::SetDeviceState(DeviceState state)
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+
+    display->SetBehavior({
+        GetDisplayBehavior(state),
+        DisplayBehaviorSource::kDeviceState,
+        {},
+        0,
+    });
 
     // 当从idle状态变成其他任何状态时，停止音乐播放
     if (previous_state == kDeviceStateIdle && state != kDeviceStateIdle)
