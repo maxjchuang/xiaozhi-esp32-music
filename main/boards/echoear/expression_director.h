@@ -1,0 +1,79 @@
+#pragma once
+
+#include <esp_timer.h>
+
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
+
+#include "display/display_behavior.h"
+
+namespace anim {
+
+enum class ExpressionUiMode {
+    kTips,
+    kTime,
+    kListening,
+};
+
+struct ExpressionRenderModel {
+    int animation_asset_id;
+    bool repeat;
+    int fps;
+    int icon_asset_id;
+    ExpressionUiMode ui_mode;
+
+    bool operator==(const ExpressionRenderModel& other) const;
+};
+
+class ExpressionDirector {
+public:
+    using RenderCallback = std::function<void(const ExpressionRenderModel&)>;
+
+    explicit ExpressionDirector(RenderCallback render_callback);
+    ~ExpressionDirector();
+
+    void SetBaseBehavior(const DisplayBehaviorRequest& request);
+    void PostTransientBehavior(const DisplayBehaviorRequest& request);
+    void SetCloudEmotion(const char* emotion);
+
+private:
+    struct BehaviorState {
+        DisplayBehaviorRequest request;
+        int priority;
+        int64_t expires_at_us;
+    };
+
+    struct EmotionState {
+        std::string name;
+        ExpressionRenderModel render_model;
+        int64_t expires_at_us;
+    };
+
+    static void TimerCallback(void* arg);
+    void OnTimer();
+    void HandleDeadline();
+    void Recompute(const char* reason);
+    void ScheduleNextDeadline();
+
+    static int GetPriority(DisplayBehavior behavior);
+    static const char* GetBehaviorName(DisplayBehavior behavior);
+    static ExpressionRenderModel GetRenderModel(DisplayBehavior behavior);
+    static std::optional<ExpressionRenderModel> GetEmotionRenderModel(const char* emotion);
+
+    RenderCallback render_callback_;
+    DisplayBehaviorRequest base_behavior_ = {
+        DisplayBehavior::kStartup,
+        DisplayBehaviorSource::kDeviceState,
+        {},
+        0,
+    };
+    std::optional<BehaviorState> transient_behavior_;
+    std::optional<EmotionState> cloud_emotion_;
+    std::optional<ExpressionRenderModel> active_render_model_;
+    DisplayBehavior active_behavior_ = DisplayBehavior::kStartup;
+    esp_timer_handle_t timer_ = nullptr;
+};
+
+}  // namespace anim

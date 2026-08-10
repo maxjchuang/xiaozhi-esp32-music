@@ -14,6 +14,8 @@ namespace anim {
 void SetupImageDescriptor(mmap_assets_handle_t assets_handle, gfx_image_dsc_t* img_dsc, int asset_id);
 
 class EmoteEngine;
+class ExpressionDirector;
+struct ExpressionRenderModel;
 
 using FlushIoReadyCallback = std::function<bool(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t*, void*)>;
 using FlushCallback = std::function<void(gfx_handle_t, int, int, int, int, const void*)>;
@@ -46,6 +48,7 @@ public:
     EmoteDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t panel_io);
     virtual ~EmoteDisplay();
 
+    virtual void SetBehavior(const DisplayBehaviorRequest& request) override;
     virtual void SetEmotion(const char* emotion) override;
     virtual void SetStatus(const char* status) override;
     virtual void SetChatMessage(const char* role, const char* content) override;
@@ -57,10 +60,13 @@ public:
 
 private:
     void InitializeEngine(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t panel_io);
+    void InitializeDirector();
+    void ApplyRenderModel(const ExpressionRenderModel& render_model);
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 
     std::unique_ptr<anim::EmoteEngine> engine_;
+    std::unique_ptr<anim::ExpressionDirector> director_;
 };
 
 } // namespace anim

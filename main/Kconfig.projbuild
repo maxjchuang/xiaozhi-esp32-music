@@ -313,6 +313,21 @@ choice BOARD_TYPE
         depends on IDF_TARGET_ESP32C3
 endchoice
 
+config ECHOEAR_EXPRESSION_DIRECTOR
+    bool "Enable EchoEar expression director"
+    default y
+    depends on BOARD_TYPE_ECHOEAR
+    help
+        Use semantic device behaviors to coordinate EchoEar animations, icons,
+        priorities, timeouts, and state restoration.
+
+config ECHOEAR_CLOUD_EMOTION
+    bool "Enable EchoEar cloud emotion enhancement"
+    default y
+    depends on ECHOEAR_EXPRESSION_DIRECTOR
+    help
+        Allow low-priority cloud emotion messages to enhance the idle display.
+
 choice ESP_S3_LCD_EV_Board_Version_TYPE
     depends on BOARD_TYPE_ESP_S3_LCD_EV_Board
     prompt "EV_BOARD Type"

@@ -12,6 +12,7 @@
 #include <time.h>
 
 #include "display/lcd_display.h"
+#include "expression_director.h"
 #include "mmap_generate_emoji_normal.h"
 #include "config.h"
 #include "gfx.h"
@@ -341,13 +342,34 @@ void EmoteEngine::OnFlush(gfx_handle_t handle, int x_start, int y_start,
 EmoteDisplay::EmoteDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t panel_io)
 {
     InitializeEngine(panel, panel_io);
+    InitializeDirector();
 }
 
 EmoteDisplay::~EmoteDisplay() = default;
 
+void EmoteDisplay::SetBehavior(const DisplayBehaviorRequest& request)
+{
+    if (!director_) {
+        return;
+    }
+
+    if (request.source == DisplayBehaviorSource::kDeviceState) {
+        director_->SetBaseBehavior(request);
+    } else {
+        director_->PostTransientBehavior(request);
+    }
+}
+
 void EmoteDisplay::SetEmotion(const char* emotion)
 {
     if (!engine_) {
+        return;
+    }
+
+    if (director_) {
+#if CONFIG_ECHOEAR_CLOUD_EMOTION
+        director_->SetCloudEmotion(emotion);
+#endif
         return;
     }
 
@@ -400,23 +422,23 @@ void EmoteDisplay::SetStatus(const char* status)
         return;
     }
 
-    if (std::strcmp(status, "聆听中...") == 0) {
+    if (!director_ && std::strcmp(status, "聆听中...") == 0) {
         SetUIDisplayMode(UIDisplayMode::SHOW_ANIM_TOP);
         engine_->setEyes(MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF, true, 20);
         engine_->SetIcon(MMAP_EMOJI_NORMAL_ICON_MIC_BIN);
-    } else if (std::strcmp(status, "待命") == 0) {
+    } else if (!director_ && std::strcmp(status, "待命") == 0) {
         SetUIDisplayMode(UIDisplayMode::SHOW_TIME);
         engine_->SetIcon(MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN);
-    } else if (std::strcmp(status, "说话中...") == 0) {
+    } else if (!director_ && std::strcmp(status, "说话中...") == 0) {
         SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
         engine_->SetIcon(MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN);
-    } else if (std::strcmp(status, "错误") == 0) {
+    } else if (!director_ && std::strcmp(status, "错误") == 0) {
         SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
         engine_->SetIcon(MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN);
     }
 
     engine_->Lock();
-    if (std::strcmp(status, "连接中...") != 0) {
+    if (director_ || std::strcmp(status, "连接中...") != 0) {
         gfx_label_set_text(obj_label_tips, status);
     }
     engine_->Unlock();
@@ -425,6 +447,40 @@ void EmoteDisplay::SetStatus(const char* status)
 void EmoteDisplay::InitializeEngine(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t panel_io)
 {
     engine_ = std::make_unique<EmoteEngine>(panel, panel_io);
+}
+
+void EmoteDisplay::InitializeDirector()
+{
+#if CONFIG_ECHOEAR_EXPRESSION_DIRECTOR
+    director_ = std::make_unique<ExpressionDirector>(
+        [this](const ExpressionRenderModel& render_model) {
+            ApplyRenderModel(render_model);
+        });
+#endif
+}
+
+void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
+{
+    if (!engine_) {
+        return;
+    }
+
+    engine_->setEyes(render_model.animation_asset_id, render_model.repeat, render_model.fps);
+    engine_->SetIcon(render_model.icon_asset_id);
+
+    engine_->Lock();
+    switch (render_model.ui_mode) {
+    case ExpressionUiMode::kTips:
+        SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
+        break;
+    case ExpressionUiMode::kTime:
+        SetUIDisplayMode(UIDisplayMode::SHOW_TIME);
+        break;
+    case ExpressionUiMode::kListening:
+        SetUIDisplayMode(UIDisplayMode::SHOW_ANIM_TOP);
+        break;
+    }
+    engine_->Unlock();
 }
 
 bool EmoteDisplay::Lock(int timeout_ms)

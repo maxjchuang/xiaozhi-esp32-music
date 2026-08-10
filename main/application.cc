@@ -528,6 +528,12 @@ void Application::Start()
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
                 Schedule([this, display, message = std::string(text->valuestring)]() {
                     display->SetChatMessage("user", message.c_str());
+                    display->SetBehavior({
+                        DisplayBehavior::kThinking,
+                        DisplayBehaviorSource::kSystem,
+                        {},
+                        15000,
+                    });
                 });
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
@@ -687,6 +693,12 @@ void Application::OnWakeWordDetected()
 
     if (device_state_ == kDeviceStateIdle)
     {
+        Board::GetInstance().GetDisplay()->SetBehavior({
+            DisplayBehavior::kWakeAcknowledged,
+            DisplayBehaviorSource::kWakeWord,
+            {},
+            400,
+        });
         audio_service_.EncodeWakeWord();
 
         if (!protocol_->IsAudioChannelOpened())
@@ -718,6 +730,12 @@ void Application::OnWakeWordDetected()
     }
     else if (device_state_ == kDeviceStateSpeaking)
     {
+        Board::GetInstance().GetDisplay()->SetBehavior({
+            DisplayBehavior::kWakeAcknowledged,
+            DisplayBehaviorSource::kWakeWord,
+            {},
+            400,
+        });
         AbortSpeaking(kAbortReasonWakeWordDetected);
     }
     else if (device_state_ == kDeviceStateActivating)
