@@ -89,6 +89,36 @@
      });
  }
 
+ void PostMcpBehavior(DisplayBehavior behavior, const std::string& detail, int duration_ms) {
+     Application::GetInstance().Schedule([behavior, detail, duration_ms]() {
+         auto display = Board::GetInstance().GetDisplay();
+         if (display) {
+             display->SetBehavior({
+                 behavior,
+                 DisplayBehaviorSource::kMcp,
+                 detail,
+                 duration_ms,
+             });
+         }
+     });
+ }
+
+ std::string GetToolDisplayText(const std::string& tool_name) {
+     std::string normalized = tool_name;
+     std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+     if (normalized.find("music") != std::string::npos ||
+         normalized.find("song") != std::string::npos) {
+         return "正在找歌";
+     }
+     if (normalized.find("network") != std::string::npos ||
+         normalized.find("wifi") != std::string::npos ||
+         normalized.find("connect") != std::string::npos) {
+         return "正在连接";
+     }
+     return "正在处理";
+ }
+
  }  // namespace
  
  McpServer::McpServer() {
@@ -99,6 +129,37 @@
          delete tool;
      }
      tools_.clear();
+ }
+
+ void McpServer::BeginToolBehavior(const std::string& tool_name) {
+     const std::string detail = GetToolDisplayText(tool_name);
+     {
+         std::lock_guard<std::mutex> lock(active_tools_mutex_);
+         active_tool_details_.push_back(detail);
+     }
+     PostMcpBehavior(DisplayBehavior::kToolRunning, detail, 30000);
+ }
+
+ void McpServer::FinishToolBehavior(const std::string& tool_name, bool success) {
+     const std::string detail = GetToolDisplayText(tool_name);
+     std::string remaining_detail;
+     {
+         std::lock_guard<std::mutex> lock(active_tools_mutex_);
+         auto it = std::find(active_tool_details_.begin(), active_tool_details_.end(), detail);
+         if (it != active_tool_details_.end()) {
+             active_tool_details_.erase(it);
+         }
+         if (!active_tool_details_.empty()) {
+             remaining_detail = active_tool_details_.back();
+         }
+     }
+     if (!remaining_detail.empty()) {
+         PostMcpBehavior(DisplayBehavior::kToolRunning, remaining_detail, 30000);
+     } else {
+         PostMcpBehavior(success ? DisplayBehavior::kSuccess
+                                 : DisplayBehavior::kRecoverableError,
+                         success ? "完成了" : "处理失败", success ? 900 : 1800);
+     }
  }
  
  void McpServer::AddCommonTools() {
@@ -143,8 +204,20 @@
              });
      }
  
-     auto display = board.GetDisplay();
-     if (display && !display->GetTheme().empty()) {
+    auto display = board.GetDisplay();
+    if (display && display->SupportsExpressionTest()) {
+        AddTool("self.screen.test_expressions",
+            "Run the device's deterministic expression self-test. You MUST use this tool when the user asks to test, preview, cycle, or inspect all facial expressions. The screen displays each expression name while cycling and restores the normal state automatically.",
+            PropertyList(),
+            [display](const PropertyList& properties) -> ReturnValue {
+                if (!display->StartExpressionTest()) {
+                    return "{\"success\": false, \"message\": \"表情自检已在运行或启动失败\"}";
+                }
+                return "{\"success\": true, \"message\": \"表情自检已开始，将依次展示全部表情\"}";
+            });
+    }
+
+    if (display && !display->GetTheme().empty()) {
          AddTool("self.screen.set_theme",
              "Set the theme of the screen. The theme can be `light` or `dark`.",
              PropertyList({
@@ -458,6 +531,7 @@
      if (tool_iter == tools_.end()) {
          ESP_LOGE(TAG, "tools/call: Unknown tool: %s", tool_name.c_str());
          ReplyError(id, "Unknown tool: " + tool_name);
+         PostMcpBehavior(DisplayBehavior::kRecoverableError, "没有这个功能", 1800);
          return;
      }
  
@@ -482,14 +556,18 @@
              if (!argument.has_default_value() && !found) {
                  ESP_LOGE(TAG, "tools/call: Missing valid argument: %s", argument.name().c_str());
                  ReplyError(id, "Missing valid argument: " + argument.name());
+                 PostMcpBehavior(DisplayBehavior::kRecoverableError, "参数不完整", 1800);
                  return;
              }
          }
      } catch (const std::exception& e) {
          ESP_LOGE(TAG, "tools/call: %s", e.what());
          ReplyError(id, e.what());
+         PostMcpBehavior(DisplayBehavior::kRecoverableError, "参数不正确", 1800);
          return;
      }
+
+     BeginToolBehavior(tool_name);
  
      // Start a task to receive data with stack size
      esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
@@ -499,13 +577,23 @@
      esp_pthread_set_cfg(&cfg);
  
      // Use a thread to call the tool to avoid blocking the main thread
-     tool_call_thread_ = std::thread([this, id, tool_iter, arguments = std::move(arguments)]() {
-         try {
-             ReplyResult(id, (*tool_iter)->Call(arguments));
-         } catch (const std::exception& e) {
-             ESP_LOGE(TAG, "tools/call: %s", e.what());
-             ReplyError(id, e.what());
-         }
-     });
-     tool_call_thread_.detach();
+     try {
+         tool_call_thread_ = std::thread([this, id, tool_iter, tool_name,
+                                         arguments = std::move(arguments)]() {
+             try {
+                 auto result = (*tool_iter)->Call(arguments);
+                 ReplyResult(id, result);
+                 FinishToolBehavior(tool_name, true);
+             } catch (const std::exception& e) {
+                 ESP_LOGE(TAG, "tools/call: %s", e.what());
+                 ReplyError(id, e.what());
+                 FinishToolBehavior(tool_name, false);
+             }
+         });
+         tool_call_thread_.detach();
+     } catch (const std::exception& e) {
+         ESP_LOGE(TAG, "tools/call: Failed to start task: %s", e.what());
+         ReplyError(id, "Failed to start tool task");
+         FinishToolBehavior(tool_name, false);
+     }
  }

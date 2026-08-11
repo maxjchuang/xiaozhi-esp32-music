@@ -313,6 +313,46 @@ choice BOARD_TYPE
         depends on IDF_TARGET_ESP32C3
 endchoice
 
+config ECHOEAR_EXPRESSION_DIRECTOR
+    bool "Enable EchoEar expression director"
+    default y
+    depends on BOARD_TYPE_ECHOEAR
+    help
+        Use semantic device behaviors to coordinate EchoEar animations, icons,
+        priorities, timeouts, and state restoration.
+
+config ECHOEAR_CLOUD_EMOTION
+    bool "Enable EchoEar cloud emotion enhancement"
+    default y
+    depends on ECHOEAR_EXPRESSION_DIRECTOR
+    help
+        Allow low-priority cloud emotion messages to enhance the idle display.
+
+config ECHOEAR_IDLE_MICRO_MOTIONS
+    bool "Enable EchoEar idle micro motions"
+    default y
+    depends on ECHOEAR_EXPRESSION_DIRECTOR
+    help
+        Add restrained random blinking and curious idle motions. High-priority
+        device, music, tool, and network states always interrupt them.
+
+config ECHOEAR_IDLE_SLEEP_TIMEOUT_SECONDS
+    int "EchoEar idle sleepy timeout (seconds)"
+    default 300
+    range 30 3600
+    depends on ECHOEAR_IDLE_MICRO_MOTIONS
+    help
+        Enter the sleepy expression after this many seconds without an active
+        interaction. WakeNet remains enabled and immediately cancels sleep.
+
+config ECHOEAR_EXPRESSION_DEBUG_LOG
+    bool "Enable detailed EchoEar expression debug logs"
+    default n
+    depends on ECHOEAR_EXPRESSION_DIRECTOR
+    help
+        Log idle scheduling and expiration details. State transitions remain
+        available at info level when this option is disabled.
+
 choice ESP_S3_LCD_EV_Board_Version_TYPE
     depends on BOARD_TYPE_ESP_S3_LCD_EV_Board
     prompt "EV_BOARD Type"

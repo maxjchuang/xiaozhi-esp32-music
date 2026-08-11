@@ -31,6 +31,32 @@ static const char *const STATE_STRINGS[] = {
     "fatal_error",
     "invalid_state"};
 
+static DisplayBehavior GetDisplayBehavior(DeviceState state)
+{
+    switch (state)
+    {
+    case kDeviceStateUnknown:
+    case kDeviceStateStarting:
+    case kDeviceStateUpgrading:
+        return DisplayBehavior::kStartup;
+    case kDeviceStateWifiConfiguring:
+    case kDeviceStateConnecting:
+    case kDeviceStateActivating:
+        return DisplayBehavior::kConnecting;
+    case kDeviceStateIdle:
+        return DisplayBehavior::kIdle;
+    case kDeviceStateListening:
+        return DisplayBehavior::kListening;
+    case kDeviceStateSpeaking:
+    case kDeviceStateAudioTesting:
+        return DisplayBehavior::kSpeaking;
+    case kDeviceStateFatalError:
+        return DisplayBehavior::kFatalError;
+    }
+
+    return DisplayBehavior::kStartup;
+}
+
 Application::Application()
 {
     event_group_ = xEventGroupCreate();
@@ -291,6 +317,11 @@ void Application::ToggleChatState()
             if (!protocol_->IsAudioChannelOpened()) {
                 SetDeviceState(kDeviceStateConnecting);
                 if (!protocol_->OpenAudioChannel()) {
+                    auto display = Board::GetInstance().GetDisplay();
+                    display->SetBehavior({DisplayBehavior::kRecoverableError,
+                                          DisplayBehaviorSource::kNetwork,
+                                          "连接失败", 2500});
+                    SetDeviceState(kDeviceStateIdle);
                     return;
                 }
             }
@@ -336,6 +367,11 @@ void Application::StartListening()
             if (!protocol_->IsAudioChannelOpened()) {
                 SetDeviceState(kDeviceStateConnecting);
                 if (!protocol_->OpenAudioChannel()) {
+                    auto display = Board::GetInstance().GetDisplay();
+                    display->SetBehavior({DisplayBehavior::kRecoverableError,
+                                          DisplayBehaviorSource::kNetwork,
+                                          "连接失败", 2500});
+                    SetDeviceState(kDeviceStateIdle);
                     return;
                 }
             }
@@ -452,6 +488,12 @@ void Application::Start()
     protocol_->OnAudioChannelOpened([this, codec, &board]()
                                     {
         board.SetPowerSaveMode(false);
+        Schedule([]() {
+            auto display = Board::GetInstance().GetDisplay();
+            display->SetBehavior({DisplayBehavior::kSuccess,
+                                  DisplayBehaviorSource::kNetwork,
+                                  "连接成功", 800});
+        });
         if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
             ESP_LOGW(TAG, "Server sample rate %d does not match device output sample rate %d, resampling may cause distortion",
                 protocol_->server_sample_rate(), codec->output_sample_rate());
@@ -502,6 +544,12 @@ void Application::Start()
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
                 Schedule([this, display, message = std::string(text->valuestring)]() {
                     display->SetChatMessage("user", message.c_str());
+                    display->SetBehavior({
+                        DisplayBehavior::kThinking,
+                        DisplayBehaviorSource::kSystem,
+                        {},
+                        15000,
+                    });
                 });
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
@@ -611,7 +659,11 @@ void Application::MainEventLoop()
         if (bits & MAIN_EVENT_ERROR)
         {
             SetDeviceState(kDeviceStateIdle);
-            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "sad", Lang::Sounds::P3_EXCLAMATION);
+            auto display = Board::GetInstance().GetDisplay();
+            display->SetBehavior({DisplayBehavior::kRecoverableError,
+                                  DisplayBehaviorSource::kNetwork,
+                                  "网络断开了", 2500});
+            Alert(Lang::Strings::ERROR, "网络断开了", "sad", Lang::Sounds::P3_EXCLAMATION);
         }
 
         if (bits & MAIN_EVENT_SEND_AUDIO)
@@ -661,16 +713,27 @@ void Application::OnWakeWordDetected()
 
     if (device_state_ == kDeviceStateIdle)
     {
+        Board::GetInstance().GetDisplay()->SetBehavior({
+            DisplayBehavior::kWakeAcknowledged,
+            DisplayBehaviorSource::kWakeWord,
+            {},
+            400,
+        });
         audio_service_.EncodeWakeWord();
 
-        if (!protocol_->IsAudioChannelOpened())
-        {
-            SetDeviceState(kDeviceStateConnecting);
-            if (!protocol_->OpenAudioChannel())
+            if (!protocol_->IsAudioChannelOpened())
             {
-                audio_service_.EnableWakeWordDetection(true);
-                return;
-            }
+                SetDeviceState(kDeviceStateConnecting);
+                if (!protocol_->OpenAudioChannel())
+                {
+                    auto display = Board::GetInstance().GetDisplay();
+                    display->SetBehavior({DisplayBehavior::kRecoverableError,
+                                          DisplayBehaviorSource::kNetwork,
+                                          "连接失败", 2500});
+                    SetDeviceState(kDeviceStateIdle);
+                    audio_service_.EnableWakeWordDetection(true);
+                    return;
+                }
         }
 
         auto wake_word = audio_service_.GetLastWakeWord();
@@ -692,6 +755,12 @@ void Application::OnWakeWordDetected()
     }
     else if (device_state_ == kDeviceStateSpeaking)
     {
+        Board::GetInstance().GetDisplay()->SetBehavior({
+            DisplayBehavior::kWakeAcknowledged,
+            DisplayBehaviorSource::kWakeWord,
+            {},
+            400,
+        });
         AbortSpeaking(kAbortReasonWakeWordDetected);
     }
     else if (device_state_ == kDeviceStateActivating)
@@ -732,6 +801,13 @@ void Application::SetDeviceState(DeviceState state)
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+
+    display->SetBehavior({
+        GetDisplayBehavior(state),
+        DisplayBehaviorSource::kDeviceState,
+        {},
+        0,
+    });
 
     // 当从idle状态变成其他任何状态时，停止音乐播放
     if (previous_state == kDeviceStateIdle && state != kDeviceStateIdle)

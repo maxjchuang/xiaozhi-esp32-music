@@ -7,13 +7,16 @@
 #include <esp_lcd_panel_ops.h>
 #include "mmap_generate_emoji_normal.h"
 #include "gfx.h"
+#include <atomic>
 
 namespace anim {
 
 // Helper function for setting up image descriptors
-void SetupImageDescriptor(mmap_assets_handle_t assets_handle, gfx_image_dsc_t* img_dsc, int asset_id);
+bool SetupImageDescriptor(mmap_assets_handle_t assets_handle, gfx_image_dsc_t* img_dsc, int asset_id);
 
 class EmoteEngine;
+class ExpressionDirector;
+struct ExpressionRenderModel;
 
 using FlushIoReadyCallback = std::function<bool(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t*, void*)>;
 using FlushCallback = std::function<void(gfx_handle_t, int, int, int, int, const void*)>;
@@ -46,9 +49,12 @@ public:
     EmoteDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t panel_io);
     virtual ~EmoteDisplay();
 
+    virtual void SetBehavior(const DisplayBehaviorRequest& request) override;
     virtual void SetEmotion(const char* emotion) override;
     virtual void SetStatus(const char* status) override;
     virtual void SetChatMessage(const char* role, const char* content) override;
+    virtual bool SupportsExpressionTest() const override { return true; }
+    virtual bool StartExpressionTest() override;
     
     anim::EmoteEngine* GetEngine()
     {
@@ -57,10 +63,17 @@ public:
 
 private:
     void InitializeEngine(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t panel_io);
+    void InitializeDirector();
+    void ApplyRenderModel(const ExpressionRenderModel& render_model);
+    void ApplyExpressionTestFrame(const char* name, const ExpressionRenderModel& render_model);
+    void RunExpressionTest();
+    static void ExpressionTestTask(void* arg);
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 
     std::unique_ptr<anim::EmoteEngine> engine_;
+    std::unique_ptr<anim::ExpressionDirector> director_;
+    std::atomic<bool> expression_test_running_{false};
 };
 
 } // namespace anim

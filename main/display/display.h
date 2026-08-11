@@ -9,6 +9,8 @@
 #include <string>
 #include <chrono>
 
+#include "display_behavior.h"
+
 struct DisplayFonts {
     const lv_font_t* text_font = nullptr;
     const lv_font_t* icon_font = nullptr;
@@ -23,6 +25,7 @@ public:
     virtual void SetStatus(const char* status);
     virtual void ShowNotification(const char* notification, int duration_ms = 3000);
     virtual void ShowNotification(const std::string &notification, int duration_ms = 3000);
+    virtual void SetBehavior(const DisplayBehaviorRequest& request);
     virtual void SetEmotion(const char* emotion);
     virtual void SetChatMessage(const char* role, const char* content);
     virtual void SetMusicInfo(const char* song_name);
@@ -32,6 +35,8 @@ public:
     virtual std::string GetTheme() { return current_theme_name_; }
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
+    virtual bool SupportsExpressionTest() const { return false; }
+    virtual bool StartExpressionTest() { return false; }
     virtual void start() {}
     virtual void clearScreen() {}  // 清除FFT显示，默认为空实现
     virtual void stopFft() {}      // 停止FFT显示，默认为空实现

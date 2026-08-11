@@ -9,6 +9,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <mutex>
 
 #include <cJSON.h>
 
@@ -273,9 +274,13 @@ private:
 
     void GetToolsList(int id, const std::string& cursor);
     void DoToolCall(int id, const std::string& tool_name, const cJSON* tool_arguments, int stack_size);
+    void BeginToolBehavior(const std::string& tool_name);
+    void FinishToolBehavior(const std::string& tool_name, bool success);
 
     std::vector<McpTool*> tools_;
     std::thread tool_call_thread_;
+    std::mutex active_tools_mutex_;
+    std::vector<std::string> active_tool_details_;
 };
 
 #endif // MCP_SERVER_H

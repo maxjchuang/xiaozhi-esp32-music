@@ -91,6 +91,12 @@ void WifiBoard::StartNetwork() {
     wifi_station.OnScanBegin([this]() {
         auto display = Board::GetInstance().GetDisplay();
         display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
+        Application::GetInstance().Schedule([]() {
+            auto display = Board::GetInstance().GetDisplay();
+            display->SetBehavior({DisplayBehavior::kConnecting,
+                                  DisplayBehaviorSource::kNetwork,
+                                  "正在搜索网络", 30000});
+        });
     });
     wifi_station.OnConnect([this](const std::string& ssid) {
         auto display = Board::GetInstance().GetDisplay();
@@ -98,17 +104,33 @@ void WifiBoard::StartNetwork() {
         notification += ssid;
         notification += "...";
         display->ShowNotification(notification.c_str(), 30000);
+        Application::GetInstance().Schedule([]() {
+            auto display = Board::GetInstance().GetDisplay();
+            display->SetBehavior({DisplayBehavior::kConnecting,
+                                  DisplayBehaviorSource::kNetwork,
+                                  "正在连接", 30000});
+        });
     });
     wifi_station.OnConnected([this](const std::string& ssid) {
         auto display = Board::GetInstance().GetDisplay();
         std::string notification = Lang::Strings::CONNECTED_TO;
         notification += ssid;
         display->ShowNotification(notification.c_str(), 30000);
+        Application::GetInstance().Schedule([]() {
+            auto display = Board::GetInstance().GetDisplay();
+            display->SetBehavior({DisplayBehavior::kSuccess,
+                                  DisplayBehaviorSource::kNetwork,
+                                  "网络已连接", 1000});
+        });
     });
     wifi_station.Start();
 
     // Try to connect to WiFi, if failed, launch the WiFi configuration AP
     if (!wifi_station.WaitForConnected(60 * 1000)) {
+        auto display = Board::GetInstance().GetDisplay();
+        display->SetBehavior({DisplayBehavior::kRecoverableError,
+                              DisplayBehaviorSource::kNetwork,
+                              "网络连接失败", 2500});
         wifi_station.Stop();
         wifi_config_mode_ = true;
         EnterWifiConfigMode();

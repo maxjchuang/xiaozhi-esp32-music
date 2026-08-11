@@ -23,6 +23,46 @@
 
 #define TAG "Esp32Music"
 
+namespace {
+
+void PostMusicBehavior(DisplayBehavior behavior, const std::string& detail = {}, int duration_ms = 0)
+{
+    Application::GetInstance().Schedule([behavior, detail, duration_ms]() {
+        auto display = Board::GetInstance().GetDisplay();
+        if (display) {
+            display->SetBehavior({
+                behavior,
+                DisplayBehaviorSource::kMusic,
+                detail,
+                duration_ms,
+            });
+        }
+    });
+}
+
+void PostMusicError(const std::string& detail)
+{
+    Application::GetInstance().Schedule([detail]() {
+        auto display = Board::GetInstance().GetDisplay();
+        if (display) {
+            display->SetBehavior({
+                DisplayBehavior::kIdle,
+                DisplayBehaviorSource::kMusic,
+                detail,
+                0,
+            });
+            display->SetBehavior({
+                DisplayBehavior::kRecoverableError,
+                DisplayBehaviorSource::kMusic,
+                detail,
+                1800,
+            });
+        }
+    });
+}
+
+}  // namespace
+
 // ========== 简单的ESP32认证函数 ==========
 
 /**
@@ -511,6 +551,7 @@ bool Esp32Music::StartStreaming(const std::string &music_url)
     if (music_url.empty())
     {
         ESP_LOGE(TAG, "Music URL is empty");
+        PostMusicError("empty_url");
         return false;
     }
 
@@ -553,6 +594,7 @@ bool Esp32Music::StartStreaming(const std::string &music_url)
     // flag for a cancellation.
     is_downloading_ = true;
     is_playing_ = true;
+    PostMusicBehavior(DisplayBehavior::kMusicBuffering, current_song_name_);
     download_thread_ = std::thread(&Esp32Music::DownloadAudioStream, this, music_url);
 
     // 开始播放线程（会等待缓冲区有足够数据）
@@ -568,6 +610,8 @@ bool Esp32Music::StopStreaming()
 {
     ESP_LOGI(TAG, "Stopping music streaming - current state: downloading=%d, playing=%d",
              is_downloading_.load(), is_playing_.load());
+
+    PostMusicBehavior(DisplayBehavior::kIdle, current_song_name_);
 
     // 重置采样率到原始值
     ResetSampleRate();
@@ -679,6 +723,7 @@ void Esp32Music::DownloadAudioStream(const std::string &music_url)
     if (music_url.empty() || music_url.find("http") != 0)
     {
         ESP_LOGE(TAG, "Invalid URL format: %s", music_url.c_str());
+        PostMusicError("invalid_url");
         finish_download();
         return;
     }
@@ -739,6 +784,7 @@ void Esp32Music::DownloadAudioStream(const std::string &music_url)
     if (!connected)
     {
         ESP_LOGE(TAG, "Failed to connect to music stream URL after %d attempts", kMaxConnectAttempts);
+        PostMusicError("connect_failed");
         finish_download();
         return;
     }
@@ -747,6 +793,7 @@ void Esp32Music::DownloadAudioStream(const std::string &music_url)
     if (status_code != 200 && status_code != 206)
     { // 206 for partial content
         ESP_LOGE(TAG, "HTTP GET failed with status code: %d", status_code);
+        PostMusicError("http_status_" + std::to_string(status_code));
         http->Close();
         finish_download();
         return;
@@ -883,6 +930,7 @@ void Esp32Music::PlayAudioStream()
     if (!mp3_decoder_initialized_)
     {
         ESP_LOGE(TAG, "MP3 decoder not initialized");
+        PostMusicError("decoder_unavailable");
         is_playing_ = false;
         return;
     }
@@ -895,6 +943,9 @@ void Esp32Music::PlayAudioStream()
         if (!is_playing_ || audio_buffer_.empty())
         {
             ESP_LOGE(TAG, "No audio data available for playback");
+            if (is_playing_) {
+                PostMusicError("no_audio_data");
+            }
             is_playing_ = false;
             return;
         }
@@ -928,6 +979,7 @@ void Esp32Music::PlayAudioStream()
     if (!codec)
     {
         ESP_LOGE(TAG, "Audio codec not available");
+        PostMusicError("codec_unavailable");
         is_playing_ = false;
         return;
     }
@@ -939,12 +991,14 @@ void Esp32Music::PlayAudioStream()
     if (!codec->output_enabled())
     {
         ESP_LOGE(TAG, "Failed to enable audio output for music playback");
+        PostMusicError("output_unavailable");
         is_playing_ = false;
         return;
     }
 
     ESP_LOGI(TAG, "小智开源音乐固件qq交流群:826072986");
     ESP_LOGI(TAG, "Starting playback with buffer size: %d", buffer_size_);
+    PostMusicBehavior(DisplayBehavior::kMusicPlaying, current_song_name_);
 
     size_t total_played = 0;
     uint8_t *mp3_input_buffer = nullptr;
@@ -956,6 +1010,7 @@ void Esp32Music::PlayAudioStream()
     if (!mp3_input_buffer)
     {
         ESP_LOGE(TAG, "Failed to allocate MP3 input buffer");
+        PostMusicError("audio_memory_exhausted");
         is_playing_ = false;
         return;
     }
@@ -1248,6 +1303,7 @@ void Esp32Music::PlayAudioStream()
 
     // 停止播放标志
     is_playing_ = false;
+    PostMusicBehavior(DisplayBehavior::kIdle, current_song_name_);
 
     // Natural playback completion does not pass through StopStreaming().
     // Restore the speaker clock here so the wake-word reference path and
