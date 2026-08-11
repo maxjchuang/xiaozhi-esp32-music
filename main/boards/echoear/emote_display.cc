@@ -191,8 +191,8 @@ static void InitializeMicAnimation(gfx_handle_t engine_handle, mmap_assets_handl
     obj_anim_mic = gfx_anim_create(engine_handle);
     gfx_obj_align(obj_anim_mic, GFX_ALIGN_TOP_MID, 0, 25);
 
-    const void* anim_data = mmap_assets_get_mem(assets_handle, MMAP_EMOJI_NORMAL_LISTEN_AAF);
-    size_t anim_size = mmap_assets_get_size(assets_handle, MMAP_EMOJI_NORMAL_LISTEN_AAF);
+    const void* anim_data = mmap_assets_get_mem(assets_handle, MMAP_EMOJI_NORMAL_LISTEN_EAF);
+    size_t anim_size = mmap_assets_get_size(assets_handle, MMAP_EMOJI_NORMAL_LISTEN_EAF);
     gfx_anim_set_src(obj_anim_mic, anim_data, anim_size);
     gfx_anim_start(obj_anim_mic);
     gfx_obj_set_visible(obj_anim_mic, false);
@@ -396,13 +396,13 @@ void EmoteDisplay::SetEmotion(const char* emotion)
         {"embarrassed", {MMAP_EMOJI_NORMAL_CONFUSED_EAF,      true,  20}},
         {"confident",   {MMAP_EMOJI_NORMAL_HAPPY_EAF,         true,  20}},
         {"delicious",   {MMAP_EMOJI_NORMAL_HAPPY_EAF,         true,  20}},
-        {"sad",         {MMAP_EMOJI_NORMAL_CRY_EAF,           true,  20}},
+        {"sad",         {MMAP_EMOJI_NORMAL_SAD_EAF,           true,  20}},
         {"crying",      {MMAP_EMOJI_NORMAL_CRY_EAF,           true,  20}},
         {"sleepy",      {MMAP_EMOJI_NORMAL_SLEEP_EAF,         true,  16}},
         {"silly",       {MMAP_EMOJI_NORMAL_CONFUSED_EAF,      true,  20}},
-        {"angry",       {MMAP_EMOJI_NORMAL_ANGRY_ONE_AAF,     true,  20}},
-        {"surprised",   {MMAP_EMOJI_NORMAL_SHOCKED_ONE_AAF,   true,  20}},
-        {"shocked",     {MMAP_EMOJI_NORMAL_SHOCKED_ONE_AAF,   true,  20}},
+        {"angry",       {MMAP_EMOJI_NORMAL_ANGRY_EAF,         true,  20}},
+        {"surprised",   {MMAP_EMOJI_NORMAL_SHOCKED_EAF,       true,  20}},
+        {"shocked",     {MMAP_EMOJI_NORMAL_SHOCKED_EAF,       true,  20}},
         {"thinking",    {MMAP_EMOJI_NORMAL_CONFUSED_EAF,      true,  20}},
         {"winking",     {MMAP_EMOJI_NORMAL_WINKING_EAF,       false, 20}},
         {"relaxed",     {MMAP_EMOJI_NORMAL_NEUTRAL_EAF,       true,  20}},
@@ -520,6 +520,8 @@ void EmoteDisplay::RunExpressionTest()
     static const TestFrame frames[] = {
         {"neutral", {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
+        {"listen", {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
+                     MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening}},
         {"winking", {MMAP_EMOJI_NORMAL_WINKING_EAF, true, 12,
                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
         {"confused", {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
@@ -528,11 +530,13 @@ void EmoteDisplay::RunExpressionTest()
                    MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
         {"cry", {MMAP_EMOJI_NORMAL_CRY_EAF, true, 20,
                  MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
+        {"Sad", {MMAP_EMOJI_NORMAL_SAD_EAF, true, 20,
+                  MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
         {"sleep", {MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
                    MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
-        {"angry", {MMAP_EMOJI_NORMAL_ANGRY_ONE_AAF, true, 20,
+        {"angry", {MMAP_EMOJI_NORMAL_ANGRY_EAF, true, 20,
                    MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
-        {"shocked", {MMAP_EMOJI_NORMAL_SHOCKED_ONE_AAF, true, 20,
+        {"shocked", {MMAP_EMOJI_NORMAL_SHOCKED_EAF, true, 20,
                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
     };
 
@@ -562,7 +566,9 @@ void EmoteDisplay::ApplyExpressionTestFrame(const char* name,
     ApplyRenderModel(render_model);
     engine_->Lock();
     gfx_label_set_text(obj_label_tips, name);
-    SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
+    if (render_model.ui_mode != ExpressionUiMode::kListening) {
+        SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
+    }
     engine_->Unlock();
 }
 

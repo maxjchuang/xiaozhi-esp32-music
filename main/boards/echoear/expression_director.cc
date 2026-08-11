@@ -346,7 +346,7 @@ ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavio
         return {MMAP_EMOJI_NORMAL_CRY_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN, ExpressionUiMode::kTips};
     case DisplayBehavior::kFatalError:
-        return {MMAP_EMOJI_NORMAL_SHOCKED_ONE_AAF, true, 20,
+        return {MMAP_EMOJI_NORMAL_SHOCKED_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN, ExpressionUiMode::kTips};
     case DisplayBehavior::kMusicPlaying:
         return {MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
@@ -375,16 +375,20 @@ std::optional<ExpressionRenderModel> ExpressionDirector::GetEmotionRenderModel(c
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     }
-    if (std::strcmp(emotion, "sad") == 0 || std::strcmp(emotion, "crying") == 0) {
+    if (std::strcmp(emotion, "sad") == 0) {
+        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_SAD_EAF, true, 20,
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+    }
+    if (std::strcmp(emotion, "crying") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_CRY_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     }
     if (std::strcmp(emotion, "angry") == 0) {
-        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_ANGRY_ONE_AAF, true, 20,
+        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_ANGRY_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     }
     if (std::strcmp(emotion, "surprised") == 0 || std::strcmp(emotion, "shocked") == 0) {
-        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_SHOCKED_ONE_AAF, true, 20,
+        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_SHOCKED_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     }
     if (std::strcmp(emotion, "thinking") == 0 || std::strcmp(emotion, "embarrassed") == 0) {
