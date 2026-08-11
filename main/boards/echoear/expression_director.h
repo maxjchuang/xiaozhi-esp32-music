@@ -23,6 +23,7 @@ struct ExpressionRenderModel {
     int fps;
     int icon_asset_id;
     ExpressionUiMode ui_mode;
+    std::string text;
 
     bool operator==(const ExpressionRenderModel& other) const;
 };
@@ -73,7 +74,9 @@ private:
 
     static int GetPriority(DisplayBehavior behavior);
     static const char* GetBehaviorName(DisplayBehavior behavior);
-    static ExpressionRenderModel GetRenderModel(DisplayBehavior behavior);
+    static const char* GetSourceName(DisplayBehaviorSource source);
+    static ExpressionRenderModel GetRenderModel(DisplayBehavior behavior,
+                                                const std::string& text = {});
     static std::optional<ExpressionRenderModel> GetEmotionRenderModel(const char* emotion);
 
     RenderCallback render_callback_;
@@ -89,6 +92,7 @@ private:
     std::optional<IdleMotionState> idle_motion_;
     std::optional<ExpressionRenderModel> active_render_model_;
     DisplayBehavior active_behavior_ = DisplayBehavior::kStartup;
+    int active_priority_ = 0;
     int64_t thinking_visible_until_us_ = 0;
     int64_t idle_started_at_us_ = 0;
     int64_t next_idle_motion_at_us_ = INT64_MAX;

@@ -4,7 +4,7 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档状态 | Draft v1.0 |
+| 文档状态 | Implemented v1.0 |
 | 适用设备 | EchoEar 喵伴 |
 | 适用固件 | `xiaozhi-echoear-firmware` |
 | 阶段主题 | 表情导演、交互状态表情、待机微动作 |

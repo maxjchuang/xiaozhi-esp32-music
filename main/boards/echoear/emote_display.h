@@ -12,7 +12,7 @@
 namespace anim {
 
 // Helper function for setting up image descriptors
-void SetupImageDescriptor(mmap_assets_handle_t assets_handle, gfx_image_dsc_t* img_dsc, int asset_id);
+bool SetupImageDescriptor(mmap_assets_handle_t assets_handle, gfx_image_dsc_t* img_dsc, int asset_id);
 
 class EmoteEngine;
 class ExpressionDirector;

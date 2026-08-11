@@ -345,6 +345,14 @@ config ECHOEAR_IDLE_SLEEP_TIMEOUT_SECONDS
         Enter the sleepy expression after this many seconds without an active
         interaction. WakeNet remains enabled and immediately cancels sleep.
 
+config ECHOEAR_EXPRESSION_DEBUG_LOG
+    bool "Enable detailed EchoEar expression debug logs"
+    default n
+    depends on ECHOEAR_EXPRESSION_DIRECTOR
+    help
+        Log idle scheduling and expiration details. State transitions remain
+        available at info level when this option is disabled.
+
 choice ESP_S3_LCD_EV_Board_Version_TYPE
     depends on BOARD_TYPE_ESP_S3_LCD_EV_Board
     prompt "EV_BOARD Type"

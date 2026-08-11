@@ -317,6 +317,11 @@ void Application::ToggleChatState()
             if (!protocol_->IsAudioChannelOpened()) {
                 SetDeviceState(kDeviceStateConnecting);
                 if (!protocol_->OpenAudioChannel()) {
+                    auto display = Board::GetInstance().GetDisplay();
+                    display->SetBehavior({DisplayBehavior::kRecoverableError,
+                                          DisplayBehaviorSource::kNetwork,
+                                          "连接失败", 2500});
+                    SetDeviceState(kDeviceStateIdle);
                     return;
                 }
             }
@@ -362,6 +367,11 @@ void Application::StartListening()
             if (!protocol_->IsAudioChannelOpened()) {
                 SetDeviceState(kDeviceStateConnecting);
                 if (!protocol_->OpenAudioChannel()) {
+                    auto display = Board::GetInstance().GetDisplay();
+                    display->SetBehavior({DisplayBehavior::kRecoverableError,
+                                          DisplayBehaviorSource::kNetwork,
+                                          "连接失败", 2500});
+                    SetDeviceState(kDeviceStateIdle);
                     return;
                 }
             }
@@ -478,6 +488,12 @@ void Application::Start()
     protocol_->OnAudioChannelOpened([this, codec, &board]()
                                     {
         board.SetPowerSaveMode(false);
+        Schedule([]() {
+            auto display = Board::GetInstance().GetDisplay();
+            display->SetBehavior({DisplayBehavior::kSuccess,
+                                  DisplayBehaviorSource::kNetwork,
+                                  "连接成功", 800});
+        });
         if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
             ESP_LOGW(TAG, "Server sample rate %d does not match device output sample rate %d, resampling may cause distortion",
                 protocol_->server_sample_rate(), codec->output_sample_rate());
@@ -643,7 +659,11 @@ void Application::MainEventLoop()
         if (bits & MAIN_EVENT_ERROR)
         {
             SetDeviceState(kDeviceStateIdle);
-            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "sad", Lang::Sounds::P3_EXCLAMATION);
+            auto display = Board::GetInstance().GetDisplay();
+            display->SetBehavior({DisplayBehavior::kRecoverableError,
+                                  DisplayBehaviorSource::kNetwork,
+                                  "网络断开了", 2500});
+            Alert(Lang::Strings::ERROR, "网络断开了", "sad", Lang::Sounds::P3_EXCLAMATION);
         }
 
         if (bits & MAIN_EVENT_SEND_AUDIO)
@@ -701,14 +721,19 @@ void Application::OnWakeWordDetected()
         });
         audio_service_.EncodeWakeWord();
 
-        if (!protocol_->IsAudioChannelOpened())
-        {
-            SetDeviceState(kDeviceStateConnecting);
-            if (!protocol_->OpenAudioChannel())
+            if (!protocol_->IsAudioChannelOpened())
             {
-                audio_service_.EnableWakeWordDetection(true);
-                return;
-            }
+                SetDeviceState(kDeviceStateConnecting);
+                if (!protocol_->OpenAudioChannel())
+                {
+                    auto display = Board::GetInstance().GetDisplay();
+                    display->SetBehavior({DisplayBehavior::kRecoverableError,
+                                          DisplayBehaviorSource::kNetwork,
+                                          "连接失败", 2500});
+                    SetDeviceState(kDeviceStateIdle);
+                    audio_service_.EnableWakeWordDetection(true);
+                    return;
+                }
         }
 
         auto wake_word = audio_service_.GetLastWakeWord();

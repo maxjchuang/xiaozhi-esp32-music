@@ -103,6 +103,22 @@
      });
  }
 
+ std::string GetToolDisplayText(const std::string& tool_name) {
+     std::string normalized = tool_name;
+     std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+     if (normalized.find("music") != std::string::npos ||
+         normalized.find("song") != std::string::npos) {
+         return "正在找歌";
+     }
+     if (normalized.find("network") != std::string::npos ||
+         normalized.find("wifi") != std::string::npos ||
+         normalized.find("connect") != std::string::npos) {
+         return "正在连接";
+     }
+     return "正在处理";
+ }
+
  }  // namespace
  
  McpServer::McpServer() {
@@ -113,6 +129,37 @@
          delete tool;
      }
      tools_.clear();
+ }
+
+ void McpServer::BeginToolBehavior(const std::string& tool_name) {
+     const std::string detail = GetToolDisplayText(tool_name);
+     {
+         std::lock_guard<std::mutex> lock(active_tools_mutex_);
+         active_tool_details_.push_back(detail);
+     }
+     PostMcpBehavior(DisplayBehavior::kToolRunning, detail, 30000);
+ }
+
+ void McpServer::FinishToolBehavior(const std::string& tool_name, bool success) {
+     const std::string detail = GetToolDisplayText(tool_name);
+     std::string remaining_detail;
+     {
+         std::lock_guard<std::mutex> lock(active_tools_mutex_);
+         auto it = std::find(active_tool_details_.begin(), active_tool_details_.end(), detail);
+         if (it != active_tool_details_.end()) {
+             active_tool_details_.erase(it);
+         }
+         if (!active_tool_details_.empty()) {
+             remaining_detail = active_tool_details_.back();
+         }
+     }
+     if (!remaining_detail.empty()) {
+         PostMcpBehavior(DisplayBehavior::kToolRunning, remaining_detail, 30000);
+     } else {
+         PostMcpBehavior(success ? DisplayBehavior::kSuccess
+                                 : DisplayBehavior::kRecoverableError,
+                         success ? "完成了" : "处理失败", success ? 900 : 1800);
+     }
  }
  
  void McpServer::AddCommonTools() {
@@ -484,7 +531,7 @@
      if (tool_iter == tools_.end()) {
          ESP_LOGE(TAG, "tools/call: Unknown tool: %s", tool_name.c_str());
          ReplyError(id, "Unknown tool: " + tool_name);
-         PostMcpBehavior(DisplayBehavior::kRecoverableError, tool_name, 1800);
+         PostMcpBehavior(DisplayBehavior::kRecoverableError, "没有这个功能", 1800);
          return;
      }
  
@@ -509,18 +556,18 @@
              if (!argument.has_default_value() && !found) {
                  ESP_LOGE(TAG, "tools/call: Missing valid argument: %s", argument.name().c_str());
                  ReplyError(id, "Missing valid argument: " + argument.name());
-                 PostMcpBehavior(DisplayBehavior::kRecoverableError, tool_name, 1800);
+                 PostMcpBehavior(DisplayBehavior::kRecoverableError, "参数不完整", 1800);
                  return;
              }
          }
      } catch (const std::exception& e) {
          ESP_LOGE(TAG, "tools/call: %s", e.what());
          ReplyError(id, e.what());
-         PostMcpBehavior(DisplayBehavior::kRecoverableError, tool_name, 1800);
+         PostMcpBehavior(DisplayBehavior::kRecoverableError, "参数不正确", 1800);
          return;
      }
 
-     PostMcpBehavior(DisplayBehavior::kToolRunning, tool_name, 30000);
+     BeginToolBehavior(tool_name);
  
      // Start a task to receive data with stack size
      esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
@@ -530,17 +577,23 @@
      esp_pthread_set_cfg(&cfg);
  
      // Use a thread to call the tool to avoid blocking the main thread
-     tool_call_thread_ = std::thread([this, id, tool_iter, tool_name,
-                                     arguments = std::move(arguments)]() {
-         try {
-             auto result = (*tool_iter)->Call(arguments);
-             ReplyResult(id, result);
-             PostMcpBehavior(DisplayBehavior::kSuccess, tool_name, 900);
-         } catch (const std::exception& e) {
-             ESP_LOGE(TAG, "tools/call: %s", e.what());
-             ReplyError(id, e.what());
-             PostMcpBehavior(DisplayBehavior::kRecoverableError, tool_name, 1800);
-         }
-     });
-     tool_call_thread_.detach();
+     try {
+         tool_call_thread_ = std::thread([this, id, tool_iter, tool_name,
+                                         arguments = std::move(arguments)]() {
+             try {
+                 auto result = (*tool_iter)->Call(arguments);
+                 ReplyResult(id, result);
+                 FinishToolBehavior(tool_name, true);
+             } catch (const std::exception& e) {
+                 ESP_LOGE(TAG, "tools/call: %s", e.what());
+                 ReplyError(id, e.what());
+                 FinishToolBehavior(tool_name, false);
+             }
+         });
+         tool_call_thread_.detach();
+     } catch (const std::exception& e) {
+         ESP_LOGE(TAG, "tools/call: Failed to start task: %s", e.what());
+         ReplyError(id, "Failed to start tool task");
+         FinishToolBehavior(tool_name, false);
+     }
  }

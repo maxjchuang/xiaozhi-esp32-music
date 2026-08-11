@@ -24,9 +24,9 @@ constexpr int64_t kIdleMotionMaxIntervalUs = 25 * 1000 * 1000;
 constexpr int kPriorityIdle = 0;
 constexpr int kPriorityEmotion = 1;
 constexpr int kPriorityMedia = 2;
-constexpr int kPriorityInput = 3;
-constexpr int kPriorityTask = 4;
-constexpr int kPriorityOutput = 5;
+constexpr int kPriorityTask = 3;
+constexpr int kPriorityOutput = 4;
+constexpr int kPriorityInput = 5;
 constexpr int kPriorityCritical = 6;
 
 }  // namespace
@@ -37,7 +37,8 @@ bool ExpressionRenderModel::operator==(const ExpressionRenderModel& other) const
            repeat == other.repeat &&
            fps == other.fps &&
            icon_asset_id == other.icon_asset_id &&
-           ui_mode == other.ui_mode;
+           ui_mode == other.ui_mode &&
+           text == other.text;
 }
 
 ExpressionDirector::ExpressionDirector(RenderCallback render_callback)
@@ -50,7 +51,12 @@ ExpressionDirector::ExpressionDirector(RenderCallback render_callback)
         .name = "expression",
         .skip_unhandled_events = true,
     };
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer_));
+    const esp_err_t timer_result = esp_timer_create(&timer_args, &timer_);
+    if (timer_result != ESP_OK) {
+        timer_ = nullptr;
+        ESP_LOGE(TAG, "Expression timer unavailable: %s; timed effects disabled",
+                 esp_err_to_name(timer_result));
+    }
     Recompute("initialize");
 }
 
@@ -124,9 +130,10 @@ void ExpressionDirector::PostTransientBehavior(const DisplayBehaviorRequest& req
     if (transient_behavior_.has_value() &&
         transient_behavior_->expires_at_us > now &&
         transient_behavior_->priority > priority) {
-        ESP_LOGW(TAG, "%s ignored active=%s reason=lower_priority",
+        ESP_LOGW(TAG, "%s ignored active=%s reason=lower_priority priority=%d active_priority=%d",
                  GetBehaviorName(request.behavior),
-                 GetBehaviorName(transient_behavior_->request.behavior));
+                 GetBehaviorName(transient_behavior_->request.behavior),
+                 priority, transient_behavior_->priority);
         return;
     }
 
@@ -207,7 +214,9 @@ void ExpressionDirector::Recompute(const char* reason)
         cloud_emotion_.reset();
     }
     if (idle_motion_.has_value() && idle_motion_->expires_at_us <= now) {
-        ESP_LOGD(TAG, "Idle motion finished: %s", idle_motion_->name);
+#if CONFIG_ECHOEAR_EXPRESSION_DEBUG_LOG
+        ESP_LOGI(TAG, "Idle motion finished: %s", idle_motion_->name);
+#endif
         idle_motion_.reset();
         next_idle_motion_at_us_ = now + GetRandomIdleIntervalUs();
     }
@@ -215,8 +224,11 @@ void ExpressionDirector::Recompute(const char* reason)
 
     DisplayBehavior next_behavior = base_behavior_.behavior;
     int next_priority = GetPriority(base_behavior_.behavior);
-    ExpressionRenderModel next_render_model = GetRenderModel(base_behavior_.behavior);
-    const char* selected_source = "base";
+    ExpressionRenderModel next_render_model = GetRenderModel(base_behavior_.behavior,
+                                                              base_behavior_.detail);
+    const char* selected_source = GetSourceName(base_behavior_.source);
+    std::string selected_detail = base_behavior_.detail;
+    int64_t selected_expires_at_us = INT64_MAX;
 
     if (base_behavior_.behavior == DisplayBehavior::kIdle &&
         !media_behavior_.has_value() &&
@@ -226,10 +238,11 @@ void ExpressionDirector::Recompute(const char* reason)
             next_render_model = {MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
                                  MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
                                  ExpressionUiMode::kTime};
-            selected_source = "idle_sleep";
+            selected_source = "timer_sleep";
         } else if (idle_motion_.has_value()) {
             next_render_model = idle_motion_->render_model;
             selected_source = idle_motion_->name;
+            selected_expires_at_us = idle_motion_->expires_at_us;
         }
     }
 
@@ -237,13 +250,16 @@ void ExpressionDirector::Recompute(const char* reason)
         next_priority = kPriorityEmotion;
         next_render_model = cloud_emotion_->render_model;
         selected_source = "cloud";
+        selected_expires_at_us = cloud_emotion_->expires_at_us;
     }
 
     if (media_behavior_.has_value() && media_behavior_->priority > next_priority) {
         next_behavior = media_behavior_->request.behavior;
         next_priority = media_behavior_->priority;
-        next_render_model = GetRenderModel(next_behavior);
-        selected_source = "media";
+        next_render_model = GetRenderModel(next_behavior, media_behavior_->request.detail);
+        selected_source = GetSourceName(media_behavior_->request.source);
+        selected_detail = media_behavior_->request.detail;
+        selected_expires_at_us = media_behavior_->expires_at_us;
     }
 
     const bool preserve_thinking_lead_in =
@@ -255,15 +271,38 @@ void ExpressionDirector::Recompute(const char* reason)
         (preserve_thinking_lead_in || transient_behavior_->priority >= next_priority)) {
         next_behavior = transient_behavior_->request.behavior;
         next_priority = transient_behavior_->priority;
-        next_render_model = GetRenderModel(next_behavior);
-        selected_source = "transient";
+        next_render_model = GetRenderModel(next_behavior, transient_behavior_->request.detail);
+        selected_source = GetSourceName(transient_behavior_->request.source);
+        selected_detail = transient_behavior_->request.detail;
+        selected_expires_at_us = transient_behavior_->expires_at_us;
+    }
+
+    // MCP feedback must remain visible even while the higher-priority listening
+    // or speaking eyes stay active. Treat it as a text overlay instead of
+    // allowing a task animation to interrupt user input or TTS output.
+    if (transient_behavior_.has_value() &&
+        transient_behavior_->request.source == DisplayBehaviorSource::kMcp &&
+        transient_behavior_->priority < next_priority &&
+        !transient_behavior_->request.detail.empty()) {
+        next_render_model.text = transient_behavior_->request.detail;
+        next_render_model.ui_mode = ExpressionUiMode::kTips;
+        selected_source = "mcp_overlay";
+        selected_detail = transient_behavior_->request.detail;
+        selected_expires_at_us = transient_behavior_->expires_at_us;
     }
 
     if (!active_render_model_.has_value() || !(*active_render_model_ == next_render_model)) {
-        ESP_LOGI(TAG, "%s -> %s source=%s reason=%s priority=%d",
+        const bool preempt = active_render_model_.has_value() && next_priority > active_priority_;
+        const int duration_ms = selected_expires_at_us == INT64_MAX
+            ? 0
+            : static_cast<int>(std::max<int64_t>(0, (selected_expires_at_us - now) / 1000));
+        ESP_LOGI(TAG, "%s -> %s source=%s reason=%s priority=%d preempt=%d duration_ms=%d restore=%s detail=%s",
                  GetBehaviorName(active_behavior_), GetBehaviorName(next_behavior),
-                 selected_source, reason, next_priority);
+                 selected_source, reason, next_priority, preempt,
+                 duration_ms,
+                 GetBehaviorName(base_behavior_.behavior), selected_detail.c_str());
         active_behavior_ = next_behavior;
+        active_priority_ = next_priority;
         active_render_model_ = next_render_model;
         render_callback_(next_render_model);
     }
@@ -277,7 +316,10 @@ void ExpressionDirector::ScheduleNextDeadline()
         return;
     }
 
-    esp_timer_stop(timer_);
+    const esp_err_t stop_result = esp_timer_stop(timer_);
+    if (stop_result != ESP_OK && stop_result != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Failed to stop expression timer: %s", esp_err_to_name(stop_result));
+    }
 
     int64_t next_deadline = INT64_MAX;
     if (transient_behavior_.has_value()) {
@@ -305,7 +347,13 @@ void ExpressionDirector::ScheduleNextDeadline()
     }
 
     const int64_t delay_us = std::max<int64_t>(1, next_deadline - esp_timer_get_time());
-    ESP_ERROR_CHECK(esp_timer_start_once(timer_, delay_us));
+    const esp_err_t start_result = esp_timer_start_once(timer_, delay_us);
+    if (start_result != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to schedule expression deadline: %s; timed effects disabled",
+                 esp_err_to_name(start_result));
+        esp_timer_delete(timer_);
+        timer_ = nullptr;
+    }
 }
 
 void ExpressionDirector::StartIdleTimeline(int64_t now)
@@ -385,6 +433,12 @@ void ExpressionDirector::UpdateIdleState(int64_t now)
         {"idle_slow_blink", {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 10,
                              MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
                              ExpressionUiMode::kTime}, 1500},
+        {"idle_double_blink", {MMAP_EMOJI_NORMAL_WINKING_EAF, true, 28,
+                               MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
+                               ExpressionUiMode::kTime}, 850},
+        {"idle_observe", {MMAP_EMOJI_NORMAL_LISTEN_EAF, false, 14,
+                          MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
+                          ExpressionUiMode::kTime}, 1400},
         {"idle_curious", {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 12,
                           MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
                           ExpressionUiMode::kTime}, 1200},
@@ -401,8 +455,10 @@ void ExpressionDirector::UpdateIdleState(int64_t now)
         presets[index].render_model,
         now + static_cast<int64_t>(presets[index].duration_ms) * 1000,
     };
-    ESP_LOGD(TAG, "Idle motion started: %s duration=%dms",
+#if CONFIG_ECHOEAR_EXPRESSION_DEBUG_LOG
+    ESP_LOGI(TAG, "Idle motion started: %s duration=%dms",
              presets[index].name, presets[index].duration_ms);
+#endif
 #else
     (void)now;
 #endif
@@ -472,51 +528,75 @@ const char* ExpressionDirector::GetBehaviorName(DisplayBehavior behavior)
     return "unknown";
 }
 
-ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavior)
+const char* ExpressionDirector::GetSourceName(DisplayBehaviorSource source)
+{
+    switch (source) {
+    case DisplayBehaviorSource::kDeviceState:
+        return "device_state";
+    case DisplayBehaviorSource::kWakeWord:
+        return "wake_word";
+    case DisplayBehaviorSource::kTts:
+        return "tts";
+    case DisplayBehaviorSource::kMcp:
+        return "mcp";
+    case DisplayBehaviorSource::kMusic:
+        return "music";
+    case DisplayBehaviorSource::kNetwork:
+        return "network";
+    case DisplayBehaviorSource::kSystem:
+        return "system";
+    case DisplayBehaviorSource::kTimer:
+        return "timer";
+    }
+    return "unknown";
+}
+
+ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavior,
+                                                         const std::string& text)
 {
     switch (behavior) {
     case DisplayBehavior::kStartup:
         return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips};
+                MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kConnecting:
         return {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips};
+                MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kIdle:
         return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+                MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime, text};
     case DisplayBehavior::kWakeAcknowledged:
         return {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 20,
-                MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening};
+                MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text};
     case DisplayBehavior::kListening:
         return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening};
+                MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text};
     case DisplayBehavior::kThinking:
     case DisplayBehavior::kToolRunning:
     case DisplayBehavior::kMusicBuffering:
         return {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips};
+                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kSpeaking:
         return {MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips};
+                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kSuccess:
         return {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 20,
-                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips};
+                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kRecoverableError:
         return {MMAP_EMOJI_NORMAL_CRY_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN, ExpressionUiMode::kTips};
+                MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kFatalError:
         return {MMAP_EMOJI_NORMAL_SHOCKED_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN, ExpressionUiMode::kTips};
+                MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kMusicPlaying:
         return {MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips};
+                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kMusicPaused:
         return {MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
-                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips};
+                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
     }
 
     return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
-            MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+            MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime, text};
 }
 
 std::optional<ExpressionRenderModel> ExpressionDirector::GetEmotionRenderModel(const char* emotion)

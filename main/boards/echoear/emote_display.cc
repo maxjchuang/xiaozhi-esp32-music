@@ -203,8 +203,10 @@ static void InitializeIcon(gfx_handle_t engine_handle, mmap_assets_handle_t asse
     obj_img_icon = gfx_img_create(engine_handle);
     gfx_obj_align(obj_img_icon, GFX_ALIGN_TOP_MID, -100, 38);
 
-    SetupImageDescriptor(assets_handle, &icon_img_dsc, MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN);
-    gfx_img_set_src(obj_img_icon, static_cast<void*>(&icon_img_dsc));
+    if (SetupImageDescriptor(assets_handle, &icon_img_dsc,
+                             MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN)) {
+        gfx_img_set_src(obj_img_icon, static_cast<void*>(&icon_img_dsc));
+    }
 }
 
 static void RegisterCallbacks(esp_lcd_panel_io_handle_t panel_io, gfx_handle_t engine_handle)
@@ -215,16 +217,26 @@ static void RegisterCallbacks(esp_lcd_panel_io_handle_t panel_io, gfx_handle_t e
     esp_lcd_panel_io_register_event_callbacks(panel_io, &cbs, engine_handle);
 }
 
-void SetupImageDescriptor(mmap_assets_handle_t assets_handle,
+bool SetupImageDescriptor(mmap_assets_handle_t assets_handle,
                           gfx_image_dsc_t* img_dsc,
                           int asset_id)
 {
+    if (assets_handle == nullptr || img_dsc == nullptr) {
+        ESP_LOGE(TAG, "Cannot load icon asset %d: assets unavailable", asset_id);
+        return false;
+    }
     const void* img_data = mmap_assets_get_mem(assets_handle, asset_id);
     size_t img_size = mmap_assets_get_size(assets_handle, asset_id);
+    if (img_data == nullptr || img_size <= sizeof(gfx_image_header_t)) {
+        ESP_LOGE(TAG, "Cannot load icon asset %d: invalid size %u",
+                 asset_id, static_cast<unsigned>(img_size));
+        return false;
+    }
 
     std::memcpy(&img_dsc->header, img_data, sizeof(gfx_image_header_t));
     img_dsc->data = static_cast<const uint8_t*>(img_data) + sizeof(gfx_image_header_t);
     img_dsc->data_size = img_size - sizeof(gfx_image_header_t);
+    return true;
 }
 
 EmoteEngine::EmoteEngine(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t panel_io)
@@ -279,12 +291,23 @@ EmoteEngine::~EmoteEngine()
 
 void EmoteEngine::setEyes(int aaf, bool repeat, int fps)
 {
-    if (!engine_handle_) {
+    if (!engine_handle_ || !assets_handle_) {
         return;
     }
 
     const void* src_data = mmap_assets_get_mem(assets_handle_, aaf);
     size_t src_len = mmap_assets_get_size(assets_handle_, aaf);
+    if (src_data == nullptr || src_len == 0) {
+        ESP_LOGE(TAG, "Cannot load expression asset %d; falling back to neutral", aaf);
+        src_data = mmap_assets_get_mem(assets_handle_, MMAP_EMOJI_NORMAL_NEUTRAL_EAF);
+        src_len = mmap_assets_get_size(assets_handle_, MMAP_EMOJI_NORMAL_NEUTRAL_EAF);
+        if (src_data == nullptr || src_len == 0) {
+            ESP_LOGE(TAG, "Neutral expression asset is unavailable; keeping current frame");
+            return;
+        }
+        repeat = true;
+        fps = 20;
+    }
 
     Lock();
     gfx_anim_set_src(obj_anim_eye, src_data, src_len);
@@ -319,7 +342,9 @@ void EmoteEngine::SetIcon(int asset_id)
     }
 
     Lock();
-    SetupImageDescriptor(assets_handle_, &icon_img_dsc, asset_id);
+    if (!SetupImageDescriptor(assets_handle_, &icon_img_dsc, asset_id)) {
+        return;
+    }
     gfx_img_set_src(obj_img_icon, static_cast<void*>(&icon_img_dsc));
     current_icon_type = asset_id;
     Unlock();
@@ -582,6 +607,9 @@ void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
     engine_->SetIcon(render_model.icon_asset_id);
 
     engine_->Lock();
+    if (!render_model.text.empty()) {
+        gfx_label_set_text(obj_label_tips, render_model.text.c_str());
+    }
     switch (render_model.ui_mode) {
     case ExpressionUiMode::kTips:
         SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
