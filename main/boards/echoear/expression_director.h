@@ -54,11 +54,22 @@ private:
         int64_t expires_at_us;
     };
 
+    struct IdleMotionState {
+        const char* name;
+        ExpressionRenderModel render_model;
+        int64_t expires_at_us;
+    };
+
     static void TimerCallback(void* arg);
     void OnTimer();
     void HandleDeadline();
     void Recompute(const char* reason);
     void ScheduleNextDeadline();
+    void StartIdleTimeline(int64_t now);
+    void StopIdleTimeline();
+    void UpdateIdleState(int64_t now);
+    bool IsIdleEligible() const;
+    int64_t GetRandomIdleIntervalUs() const;
 
     static int GetPriority(DisplayBehavior behavior);
     static const char* GetBehaviorName(DisplayBehavior behavior);
@@ -75,9 +86,14 @@ private:
     std::optional<BehaviorState> media_behavior_;
     std::optional<BehaviorState> transient_behavior_;
     std::optional<EmotionState> cloud_emotion_;
+    std::optional<IdleMotionState> idle_motion_;
     std::optional<ExpressionRenderModel> active_render_model_;
     DisplayBehavior active_behavior_ = DisplayBehavior::kStartup;
     int64_t thinking_visible_until_us_ = 0;
+    int64_t idle_started_at_us_ = 0;
+    int64_t next_idle_motion_at_us_ = INT64_MAX;
+    int last_idle_motion_index_ = -1;
+    bool idle_sleeping_ = false;
     esp_timer_handle_t timer_ = nullptr;
 };
 

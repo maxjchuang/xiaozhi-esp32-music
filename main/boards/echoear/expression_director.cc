@@ -5,6 +5,7 @@
 #include <utility>
 
 #include <esp_log.h>
+#include <esp_random.h>
 
 #include "application.h"
 #include "mmap_generate_emoji_normal.h"
@@ -16,6 +17,9 @@ namespace {
 constexpr char TAG[] = "Expression";
 constexpr int64_t kCloudEmotionDurationUs = 5 * 1000 * 1000;
 constexpr int64_t kThinkingMinimumVisibleUs = 600 * 1000;
+constexpr int64_t kIdleMinimumStableUs = 5 * 1000 * 1000;
+constexpr int64_t kIdleMotionMinIntervalUs = 8 * 1000 * 1000;
+constexpr int64_t kIdleMotionMaxIntervalUs = 25 * 1000 * 1000;
 
 constexpr int kPriorityIdle = 0;
 constexpr int kPriorityEmotion = 1;
@@ -60,13 +64,21 @@ ExpressionDirector::~ExpressionDirector()
 
 void ExpressionDirector::SetBaseBehavior(const DisplayBehaviorRequest& request)
 {
+    const bool was_idle = base_behavior_.behavior == DisplayBehavior::kIdle;
     base_behavior_ = request;
+    const int64_t now = esp_timer_get_time();
+    if (request.behavior == DisplayBehavior::kIdle) {
+        if (!was_idle) {
+            StartIdleTimeline(now);
+        }
+    } else {
+        StopIdleTimeline();
+    }
     // STT and TTS can arrive only a few milliseconds apart. Keep thinking on
     // screen long enough to be perceived, without delaying audio playback.
     if (request.behavior == DisplayBehavior::kSpeaking &&
         transient_behavior_.has_value() &&
         transient_behavior_->request.behavior == DisplayBehavior::kThinking) {
-        const int64_t now = esp_timer_get_time();
         if (now < thinking_visible_until_us_) {
             transient_behavior_->expires_at_us = thinking_visible_until_us_;
         } else {
@@ -78,6 +90,7 @@ void ExpressionDirector::SetBaseBehavior(const DisplayBehaviorRequest& request)
 
 void ExpressionDirector::SetMediaBehavior(const DisplayBehaviorRequest& request)
 {
+    StopIdleTimeline();
     media_behavior_ = BehaviorState{
         request,
         GetPriority(request.behavior),
@@ -92,6 +105,9 @@ void ExpressionDirector::ClearMediaBehavior()
         return;
     }
     media_behavior_.reset();
+    if (base_behavior_.behavior == DisplayBehavior::kIdle) {
+        StartIdleTimeline(esp_timer_get_time());
+    }
     Recompute("media_stopped");
 }
 
@@ -100,6 +116,10 @@ void ExpressionDirector::PostTransientBehavior(const DisplayBehaviorRequest& req
     const int duration_ms = request.duration_ms > 0 ? request.duration_ms : 1000;
     const int priority = GetPriority(request.behavior);
     const int64_t now = esp_timer_get_time();
+
+    if (base_behavior_.behavior == DisplayBehavior::kIdle) {
+        StartIdleTimeline(now);
+    }
 
     if (transient_behavior_.has_value() &&
         transient_behavior_->expires_at_us > now &&
@@ -133,10 +153,14 @@ void ExpressionDirector::SetCloudEmotion(const char* emotion)
         return;
     }
 
+    const int64_t now = esp_timer_get_time();
+    if (base_behavior_.behavior == DisplayBehavior::kIdle) {
+        StartIdleTimeline(now);
+    }
     cloud_emotion_ = EmotionState{
         emotion,
         *render_model,
-        esp_timer_get_time() + kCloudEmotionDurationUs,
+        now + kCloudEmotionDurationUs,
     };
     Recompute("cloud_emotion");
 }
@@ -182,11 +206,32 @@ void ExpressionDirector::Recompute(const char* reason)
     if (cloud_emotion_.has_value() && cloud_emotion_->expires_at_us <= now) {
         cloud_emotion_.reset();
     }
+    if (idle_motion_.has_value() && idle_motion_->expires_at_us <= now) {
+        ESP_LOGD(TAG, "Idle motion finished: %s", idle_motion_->name);
+        idle_motion_.reset();
+        next_idle_motion_at_us_ = now + GetRandomIdleIntervalUs();
+    }
+    UpdateIdleState(now);
 
     DisplayBehavior next_behavior = base_behavior_.behavior;
     int next_priority = GetPriority(base_behavior_.behavior);
     ExpressionRenderModel next_render_model = GetRenderModel(base_behavior_.behavior);
     const char* selected_source = "base";
+
+    if (base_behavior_.behavior == DisplayBehavior::kIdle &&
+        !media_behavior_.has_value() &&
+        !transient_behavior_.has_value() &&
+        !cloud_emotion_.has_value()) {
+        if (idle_sleeping_) {
+            next_render_model = {MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
+                                 MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
+                                 ExpressionUiMode::kTime};
+            selected_source = "idle_sleep";
+        } else if (idle_motion_.has_value()) {
+            next_render_model = idle_motion_->render_model;
+            selected_source = idle_motion_->name;
+        }
+    }
 
     if (cloud_emotion_.has_value() && kPriorityEmotion > next_priority) {
         next_priority = kPriorityEmotion;
@@ -241,12 +286,126 @@ void ExpressionDirector::ScheduleNextDeadline()
     if (cloud_emotion_.has_value()) {
         next_deadline = std::min(next_deadline, cloud_emotion_->expires_at_us);
     }
+#if CONFIG_ECHOEAR_IDLE_MICRO_MOTIONS
+    if (IsIdleEligible()) {
+        const int64_t sleep_at_us = idle_started_at_us_ +
+            static_cast<int64_t>(CONFIG_ECHOEAR_IDLE_SLEEP_TIMEOUT_SECONDS) * 1000 * 1000;
+        if (!idle_sleeping_ && !idle_motion_.has_value()) {
+            next_deadline = std::min(next_deadline, sleep_at_us);
+        }
+        if (idle_motion_.has_value()) {
+            next_deadline = std::min(next_deadline, idle_motion_->expires_at_us);
+        } else if (!idle_sleeping_) {
+            next_deadline = std::min(next_deadline, next_idle_motion_at_us_);
+        }
+    }
+#endif
     if (next_deadline == INT64_MAX) {
         return;
     }
 
     const int64_t delay_us = std::max<int64_t>(1, next_deadline - esp_timer_get_time());
     ESP_ERROR_CHECK(esp_timer_start_once(timer_, delay_us));
+}
+
+void ExpressionDirector::StartIdleTimeline(int64_t now)
+{
+#if CONFIG_ECHOEAR_IDLE_MICRO_MOTIONS
+    idle_started_at_us_ = now;
+    idle_motion_.reset();
+    idle_sleeping_ = false;
+    last_idle_motion_index_ = -1;
+    next_idle_motion_at_us_ = std::max(
+        now + kIdleMinimumStableUs,
+        now + GetRandomIdleIntervalUs());
+#else
+    (void)now;
+#endif
+}
+
+void ExpressionDirector::StopIdleTimeline()
+{
+    idle_started_at_us_ = 0;
+    idle_motion_.reset();
+    idle_sleeping_ = false;
+    last_idle_motion_index_ = -1;
+    next_idle_motion_at_us_ = INT64_MAX;
+}
+
+bool ExpressionDirector::IsIdleEligible() const
+{
+#if CONFIG_ECHOEAR_IDLE_MICRO_MOTIONS
+    return base_behavior_.behavior == DisplayBehavior::kIdle &&
+           idle_started_at_us_ > 0 &&
+           !media_behavior_.has_value() &&
+           !transient_behavior_.has_value() &&
+           !cloud_emotion_.has_value();
+#else
+    return false;
+#endif
+}
+
+int64_t ExpressionDirector::GetRandomIdleIntervalUs() const
+{
+    const uint32_t span = static_cast<uint32_t>(
+        kIdleMotionMaxIntervalUs - kIdleMotionMinIntervalUs + 1);
+    return kIdleMotionMinIntervalUs + static_cast<int64_t>(esp_random() % span);
+}
+
+void ExpressionDirector::UpdateIdleState(int64_t now)
+{
+#if CONFIG_ECHOEAR_IDLE_MICRO_MOTIONS
+    if (!IsIdleEligible() || idle_sleeping_ || idle_motion_.has_value()) {
+        return;
+    }
+
+    const int64_t sleep_at_us = idle_started_at_us_ +
+        static_cast<int64_t>(CONFIG_ECHOEAR_IDLE_SLEEP_TIMEOUT_SECONDS) * 1000 * 1000;
+    if (now >= sleep_at_us) {
+        idle_sleeping_ = true;
+        next_idle_motion_at_us_ = INT64_MAX;
+        ESP_LOGI(TAG, "Idle entered sleepy state after %d seconds",
+                 CONFIG_ECHOEAR_IDLE_SLEEP_TIMEOUT_SECONDS);
+        return;
+    }
+
+    if (now < next_idle_motion_at_us_) {
+        return;
+    }
+
+    struct IdleMotionPreset {
+        const char* name;
+        ExpressionRenderModel render_model;
+        int duration_ms;
+    };
+    static const IdleMotionPreset presets[] = {
+        {"idle_blink", {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 20,
+                        MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
+                        ExpressionUiMode::kTime}, 900},
+        {"idle_slow_blink", {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 10,
+                             MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
+                             ExpressionUiMode::kTime}, 1500},
+        {"idle_curious", {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 12,
+                          MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
+                          ExpressionUiMode::kTime}, 1200},
+    };
+    constexpr int preset_count = sizeof(presets) / sizeof(presets[0]);
+    int index = static_cast<int>(esp_random() % preset_count);
+    if (preset_count > 1 && index == last_idle_motion_index_) {
+        index = (index + 1 + static_cast<int>(esp_random() % (preset_count - 1))) % preset_count;
+    }
+
+    last_idle_motion_index_ = index;
+    idle_motion_ = IdleMotionState{
+        presets[index].name,
+        presets[index].render_model,
+        now + static_cast<int64_t>(presets[index].duration_ms) * 1000,
+    };
+    ESP_LOGD(TAG, "Idle motion started: %s duration=%dms",
+             presets[index].name, presets[index].duration_ms);
+#else
+    (void)now;
+#endif
 }
 
 int ExpressionDirector::GetPriority(DisplayBehavior behavior)
