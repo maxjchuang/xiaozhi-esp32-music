@@ -15,13 +15,14 @@ namespace {
 
 constexpr char TAG[] = "Expression";
 constexpr int64_t kCloudEmotionDurationUs = 5 * 1000 * 1000;
+constexpr int64_t kThinkingMinimumVisibleUs = 600 * 1000;
 
 constexpr int kPriorityIdle = 0;
 constexpr int kPriorityEmotion = 1;
 constexpr int kPriorityMedia = 2;
-constexpr int kPriorityTask = 3;
-constexpr int kPriorityOutput = 4;
-constexpr int kPriorityInput = 5;
+constexpr int kPriorityInput = 3;
+constexpr int kPriorityTask = 4;
+constexpr int kPriorityOutput = 5;
 constexpr int kPriorityCritical = 6;
 
 }  // namespace
@@ -60,7 +61,38 @@ ExpressionDirector::~ExpressionDirector()
 void ExpressionDirector::SetBaseBehavior(const DisplayBehaviorRequest& request)
 {
     base_behavior_ = request;
+    // STT and TTS can arrive only a few milliseconds apart. Keep thinking on
+    // screen long enough to be perceived, without delaying audio playback.
+    if (request.behavior == DisplayBehavior::kSpeaking &&
+        transient_behavior_.has_value() &&
+        transient_behavior_->request.behavior == DisplayBehavior::kThinking) {
+        const int64_t now = esp_timer_get_time();
+        if (now < thinking_visible_until_us_) {
+            transient_behavior_->expires_at_us = thinking_visible_until_us_;
+        } else {
+            transient_behavior_.reset();
+        }
+    }
     Recompute("base_state");
+}
+
+void ExpressionDirector::SetMediaBehavior(const DisplayBehaviorRequest& request)
+{
+    media_behavior_ = BehaviorState{
+        request,
+        GetPriority(request.behavior),
+        INT64_MAX,
+    };
+    Recompute("media_state");
+}
+
+void ExpressionDirector::ClearMediaBehavior()
+{
+    if (!media_behavior_.has_value()) {
+        return;
+    }
+    media_behavior_.reset();
+    Recompute("media_stopped");
 }
 
 void ExpressionDirector::PostTransientBehavior(const DisplayBehaviorRequest& request)
@@ -83,6 +115,9 @@ void ExpressionDirector::PostTransientBehavior(const DisplayBehaviorRequest& req
         priority,
         now + static_cast<int64_t>(duration_ms) * 1000,
     };
+    if (request.behavior == DisplayBehavior::kThinking) {
+        thinking_visible_until_us_ = now + kThinkingMinimumVisibleUs;
+    }
     Recompute("transient");
 }
 
@@ -104,6 +139,12 @@ void ExpressionDirector::SetCloudEmotion(const char* emotion)
         esp_timer_get_time() + kCloudEmotionDurationUs,
     };
     Recompute("cloud_emotion");
+}
+
+void ExpressionDirector::ForceRender()
+{
+    active_render_model_.reset();
+    Recompute("force_render");
 }
 
 void ExpressionDirector::TimerCallback(void* arg)
@@ -153,8 +194,22 @@ void ExpressionDirector::Recompute(const char* reason)
         selected_source = "cloud";
     }
 
-    if (transient_behavior_.has_value() && transient_behavior_->priority >= next_priority) {
+    if (media_behavior_.has_value() && media_behavior_->priority > next_priority) {
+        next_behavior = media_behavior_->request.behavior;
+        next_priority = media_behavior_->priority;
+        next_render_model = GetRenderModel(next_behavior);
+        selected_source = "media";
+    }
+
+    const bool preserve_thinking_lead_in =
+        transient_behavior_.has_value() &&
+        transient_behavior_->request.behavior == DisplayBehavior::kThinking &&
+        base_behavior_.behavior == DisplayBehavior::kSpeaking &&
+        now < thinking_visible_until_us_;
+    if (transient_behavior_.has_value() &&
+        (preserve_thinking_lead_in || transient_behavior_->priority >= next_priority)) {
         next_behavior = transient_behavior_->request.behavior;
+        next_priority = transient_behavior_->priority;
         next_render_model = GetRenderModel(next_behavior);
         selected_source = "transient";
     }
@@ -262,46 +317,46 @@ ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavio
 {
     switch (behavior) {
     case DisplayBehavior::kStartup:
-        return {MMAP_EMOJI_NORMAL_IDLE_ONE_AAF, false, 20,
+        return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips};
     case DisplayBehavior::kConnecting:
-        return {MMAP_EMOJI_NORMAL_THINKING_ONE_AAF, true, 20,
+        return {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips};
     case DisplayBehavior::kIdle:
-        return {MMAP_EMOJI_NORMAL_IDLE_ONE_AAF, false, 20,
+        return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     case DisplayBehavior::kWakeAcknowledged:
-        return {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF, true, 20,
+        return {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 20,
                 MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening};
     case DisplayBehavior::kListening:
-        return {MMAP_EMOJI_NORMAL_IDLE_ONE_AAF, false, 20,
+        return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening};
     case DisplayBehavior::kThinking:
     case DisplayBehavior::kToolRunning:
     case DisplayBehavior::kMusicBuffering:
-        return {MMAP_EMOJI_NORMAL_THINKING_ONE_AAF, true, 20,
+        return {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips};
     case DisplayBehavior::kSpeaking:
-        return {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF, true, 20,
+        return {MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips};
     case DisplayBehavior::kSuccess:
-        return {MMAP_EMOJI_NORMAL_ENJOY_ONE_AAF, true, 20,
+        return {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 20,
                 MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips};
     case DisplayBehavior::kRecoverableError:
-        return {MMAP_EMOJI_NORMAL_SAD_ONE_AAF, true, 20,
+        return {MMAP_EMOJI_NORMAL_CRY_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN, ExpressionUiMode::kTips};
     case DisplayBehavior::kFatalError:
         return {MMAP_EMOJI_NORMAL_SHOCKED_ONE_AAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN, ExpressionUiMode::kTips};
     case DisplayBehavior::kMusicPlaying:
-        return {MMAP_EMOJI_NORMAL_ENJOY_ONE_AAF, true, 20,
+        return {MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips};
     case DisplayBehavior::kMusicPaused:
-        return {MMAP_EMOJI_NORMAL_IDLE_ONE_AAF, false, 20,
+        return {MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
                 MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips};
     }
 
-    return {MMAP_EMOJI_NORMAL_IDLE_ONE_AAF, false, 20,
+    return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
             MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
 }
 
@@ -311,17 +366,17 @@ std::optional<ExpressionRenderModel> ExpressionDirector::GetEmotionRenderModel(c
         std::strcmp(emotion, "loving") == 0 ||
         std::strcmp(emotion, "confident") == 0 ||
         std::strcmp(emotion, "winking") == 0) {
-        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF, true, 20,
+        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     }
     if (std::strcmp(emotion, "laughing") == 0 ||
         std::strcmp(emotion, "funny") == 0 ||
         std::strcmp(emotion, "delicious") == 0) {
-        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_ENJOY_ONE_AAF, true, 20,
+        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     }
     if (std::strcmp(emotion, "sad") == 0 || std::strcmp(emotion, "crying") == 0) {
-        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_SAD_ONE_AAF, true, 20,
+        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_CRY_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     }
     if (std::strcmp(emotion, "angry") == 0) {
@@ -333,18 +388,21 @@ std::optional<ExpressionRenderModel> ExpressionDirector::GetEmotionRenderModel(c
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     }
     if (std::strcmp(emotion, "thinking") == 0 || std::strcmp(emotion, "embarrassed") == 0) {
-        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_THINKING_ONE_AAF, true, 20,
+        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     }
     if (std::strcmp(emotion, "silly") == 0 || std::strcmp(emotion, "confused") == 0) {
-        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_DIZZY_ONE_AAF, true, 20,
+        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     }
-    if (std::strcmp(emotion, "sleepy") == 0 ||
-        std::strcmp(emotion, "relaxed") == 0 ||
+    if (std::strcmp(emotion, "sleepy") == 0) {
+        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+    }
+    if (std::strcmp(emotion, "relaxed") == 0 ||
         std::strcmp(emotion, "neutral") == 0 ||
         std::strcmp(emotion, "idle") == 0) {
-        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_IDLE_ONE_AAF, false, 20,
+        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
     }
 

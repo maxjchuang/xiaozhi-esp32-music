@@ -7,6 +7,7 @@
 #include <esp_lcd_panel_ops.h>
 #include "mmap_generate_emoji_normal.h"
 #include "gfx.h"
+#include <atomic>
 
 namespace anim {
 
@@ -52,6 +53,8 @@ public:
     virtual void SetEmotion(const char* emotion) override;
     virtual void SetStatus(const char* status) override;
     virtual void SetChatMessage(const char* role, const char* content) override;
+    virtual bool SupportsExpressionTest() const override { return true; }
+    virtual bool StartExpressionTest() override;
     
     anim::EmoteEngine* GetEngine()
     {
@@ -62,11 +65,15 @@ private:
     void InitializeEngine(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t panel_io);
     void InitializeDirector();
     void ApplyRenderModel(const ExpressionRenderModel& render_model);
+    void ApplyExpressionTestFrame(const char* name, const ExpressionRenderModel& render_model);
+    void RunExpressionTest();
+    static void ExpressionTestTask(void* arg);
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 
     std::unique_ptr<anim::EmoteEngine> engine_;
     std::unique_ptr<anim::ExpressionDirector> director_;
+    std::atomic<bool> expression_test_running_{false};
 };
 
 } // namespace anim

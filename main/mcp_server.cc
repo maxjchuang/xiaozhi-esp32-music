@@ -89,6 +89,20 @@
      });
  }
 
+ void PostMcpBehavior(DisplayBehavior behavior, const std::string& detail, int duration_ms) {
+     Application::GetInstance().Schedule([behavior, detail, duration_ms]() {
+         auto display = Board::GetInstance().GetDisplay();
+         if (display) {
+             display->SetBehavior({
+                 behavior,
+                 DisplayBehaviorSource::kMcp,
+                 detail,
+                 duration_ms,
+             });
+         }
+     });
+ }
+
  }  // namespace
  
  McpServer::McpServer() {
@@ -143,8 +157,20 @@
              });
      }
  
-     auto display = board.GetDisplay();
-     if (display && !display->GetTheme().empty()) {
+    auto display = board.GetDisplay();
+    if (display && display->SupportsExpressionTest()) {
+        AddTool("self.screen.test_expressions",
+            "Run the device's deterministic expression self-test. You MUST use this tool when the user asks to test, preview, cycle, or inspect all facial expressions. The screen displays each expression name while cycling and restores the normal state automatically.",
+            PropertyList(),
+            [display](const PropertyList& properties) -> ReturnValue {
+                if (!display->StartExpressionTest()) {
+                    return "{\"success\": false, \"message\": \"表情自检已在运行或启动失败\"}";
+                }
+                return "{\"success\": true, \"message\": \"表情自检已开始，将依次展示全部表情\"}";
+            });
+    }
+
+    if (display && !display->GetTheme().empty()) {
          AddTool("self.screen.set_theme",
              "Set the theme of the screen. The theme can be `light` or `dark`.",
              PropertyList({
@@ -458,6 +484,7 @@
      if (tool_iter == tools_.end()) {
          ESP_LOGE(TAG, "tools/call: Unknown tool: %s", tool_name.c_str());
          ReplyError(id, "Unknown tool: " + tool_name);
+         PostMcpBehavior(DisplayBehavior::kRecoverableError, tool_name, 1800);
          return;
      }
  
@@ -482,14 +509,18 @@
              if (!argument.has_default_value() && !found) {
                  ESP_LOGE(TAG, "tools/call: Missing valid argument: %s", argument.name().c_str());
                  ReplyError(id, "Missing valid argument: " + argument.name());
+                 PostMcpBehavior(DisplayBehavior::kRecoverableError, tool_name, 1800);
                  return;
              }
          }
      } catch (const std::exception& e) {
          ESP_LOGE(TAG, "tools/call: %s", e.what());
          ReplyError(id, e.what());
+         PostMcpBehavior(DisplayBehavior::kRecoverableError, tool_name, 1800);
          return;
      }
+
+     PostMcpBehavior(DisplayBehavior::kToolRunning, tool_name, 30000);
  
      // Start a task to receive data with stack size
      esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
@@ -499,12 +530,16 @@
      esp_pthread_set_cfg(&cfg);
  
      // Use a thread to call the tool to avoid blocking the main thread
-     tool_call_thread_ = std::thread([this, id, tool_iter, arguments = std::move(arguments)]() {
+     tool_call_thread_ = std::thread([this, id, tool_iter, tool_name,
+                                     arguments = std::move(arguments)]() {
          try {
-             ReplyResult(id, (*tool_iter)->Call(arguments));
+             auto result = (*tool_iter)->Call(arguments);
+             ReplyResult(id, result);
+             PostMcpBehavior(DisplayBehavior::kSuccess, tool_name, 900);
          } catch (const std::exception& e) {
              ESP_LOGE(TAG, "tools/call: %s", e.what());
              ReplyError(id, e.what());
+             PostMcpBehavior(DisplayBehavior::kRecoverableError, tool_name, 1800);
          }
      });
      tool_call_thread_.detach();

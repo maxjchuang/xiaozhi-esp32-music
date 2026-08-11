@@ -35,8 +35,11 @@ public:
     ~ExpressionDirector();
 
     void SetBaseBehavior(const DisplayBehaviorRequest& request);
+    void SetMediaBehavior(const DisplayBehaviorRequest& request);
+    void ClearMediaBehavior();
     void PostTransientBehavior(const DisplayBehaviorRequest& request);
     void SetCloudEmotion(const char* emotion);
+    void ForceRender();
 
 private:
     struct BehaviorState {
@@ -69,10 +72,12 @@ private:
         {},
         0,
     };
+    std::optional<BehaviorState> media_behavior_;
     std::optional<BehaviorState> transient_behavior_;
     std::optional<EmotionState> cloud_emotion_;
     std::optional<ExpressionRenderModel> active_render_model_;
     DisplayBehavior active_behavior_ = DisplayBehavior::kStartup;
+    int64_t thinking_visible_until_us_ = 0;
     esp_timer_handle_t timer_ = nullptr;
 };
 

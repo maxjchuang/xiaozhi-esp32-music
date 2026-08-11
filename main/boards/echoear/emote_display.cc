@@ -12,6 +12,7 @@
 #include <time.h>
 
 #include "display/lcd_display.h"
+#include "application.h"
 #include "expression_director.h"
 #include "mmap_generate_emoji_normal.h"
 #include "config.h"
@@ -125,13 +126,16 @@ static void InitializeEyeAnimation(gfx_handle_t engine_handle, mmap_assets_handl
 {
     obj_anim_eye = gfx_anim_create(engine_handle);
 
-    const void* anim_data = mmap_assets_get_mem(assets_handle, MMAP_EMOJI_NORMAL_IDLE_ONE_AAF);
-    size_t anim_size = mmap_assets_get_size(assets_handle, MMAP_EMOJI_NORMAL_IDLE_ONE_AAF);
+    const void* anim_data = mmap_assets_get_mem(assets_handle, MMAP_EMOJI_NORMAL_NEUTRAL_EAF);
+    size_t anim_size = mmap_assets_get_size(assets_handle, MMAP_EMOJI_NORMAL_NEUTRAL_EAF);
 
     gfx_anim_set_src(obj_anim_eye, anim_data, anim_size);
 
     gfx_obj_align(obj_anim_eye, GFX_ALIGN_LEFT_MID, 10, -20);
-    gfx_anim_set_mirror(obj_anim_eye, true, (DISPLAY_WIDTH - (173 + 10) * 2));
+    // Eye assets are mirrored from a single-eye animation.  Automatic mirror
+    // spacing keeps both the legacy 173 px AAF assets and the newer 125 px EAF
+    // assets centered on the 360 px EchoEar display.
+    gfx_anim_set_auto_mirror(obj_anim_eye, true);
     gfx_anim_set_segment(obj_anim_eye, 0, 0xFFFF, 20, false);
     gfx_anim_start(obj_anim_eye);
 }
@@ -355,6 +359,16 @@ void EmoteDisplay::SetBehavior(const DisplayBehaviorRequest& request)
 
     if (request.source == DisplayBehaviorSource::kDeviceState) {
         director_->SetBaseBehavior(request);
+    } else if (request.source == DisplayBehaviorSource::kMusic) {
+        if (request.behavior == DisplayBehavior::kIdle) {
+            director_->ClearMediaBehavior();
+        } else if (request.behavior == DisplayBehavior::kMusicBuffering ||
+                   request.behavior == DisplayBehavior::kMusicPlaying ||
+                   request.behavior == DisplayBehavior::kMusicPaused) {
+            director_->SetMediaBehavior(request);
+        } else {
+            director_->PostTransientBehavior(request);
+        }
     } else {
         director_->PostTransientBehavior(request);
     }
@@ -375,26 +389,26 @@ void EmoteDisplay::SetEmotion(const char* emotion)
 
     using EmotionParam = std::tuple<int, bool, int>;
     static const std::unordered_map<std::string, EmotionParam> emotion_map = {
-        {"happy",       {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
-        {"laughing",    {MMAP_EMOJI_NORMAL_ENJOY_ONE_AAF,     true,  20}},
-        {"funny",       {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
-        {"loving",      {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
-        {"embarrassed", {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
-        {"confident",   {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
-        {"delicious",   {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
-        {"sad",         {MMAP_EMOJI_NORMAL_SAD_ONE_AAF,       true,  20}},
-        {"crying",      {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
-        {"sleepy",      {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
-        {"silly",       {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
+        {"happy",       {MMAP_EMOJI_NORMAL_HAPPY_EAF,         true,  20}},
+        {"laughing",    {MMAP_EMOJI_NORMAL_HAPPY_EAF,         true,  20}},
+        {"funny",       {MMAP_EMOJI_NORMAL_HAPPY_EAF,         true,  20}},
+        {"loving",      {MMAP_EMOJI_NORMAL_HAPPY_EAF,         true,  20}},
+        {"embarrassed", {MMAP_EMOJI_NORMAL_CONFUSED_EAF,      true,  20}},
+        {"confident",   {MMAP_EMOJI_NORMAL_HAPPY_EAF,         true,  20}},
+        {"delicious",   {MMAP_EMOJI_NORMAL_HAPPY_EAF,         true,  20}},
+        {"sad",         {MMAP_EMOJI_NORMAL_CRY_EAF,           true,  20}},
+        {"crying",      {MMAP_EMOJI_NORMAL_CRY_EAF,           true,  20}},
+        {"sleepy",      {MMAP_EMOJI_NORMAL_SLEEP_EAF,         true,  16}},
+        {"silly",       {MMAP_EMOJI_NORMAL_CONFUSED_EAF,      true,  20}},
         {"angry",       {MMAP_EMOJI_NORMAL_ANGRY_ONE_AAF,     true,  20}},
-        {"surprised",   {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
+        {"surprised",   {MMAP_EMOJI_NORMAL_SHOCKED_ONE_AAF,   true,  20}},
         {"shocked",     {MMAP_EMOJI_NORMAL_SHOCKED_ONE_AAF,   true,  20}},
-        {"thinking",    {MMAP_EMOJI_NORMAL_THINKING_ONE_AAF,  true,  20}},
-        {"winking",     {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
-        {"relaxed",     {MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF,     true,  20}},
-        {"confused",    {MMAP_EMOJI_NORMAL_DIZZY_ONE_AAF,     true,  20}},
-        {"neutral",     {MMAP_EMOJI_NORMAL_IDLE_ONE_AAF,      false, 20}},
-        {"idle",        {MMAP_EMOJI_NORMAL_IDLE_ONE_AAF,      false, 20}},
+        {"thinking",    {MMAP_EMOJI_NORMAL_CONFUSED_EAF,      true,  20}},
+        {"winking",     {MMAP_EMOJI_NORMAL_WINKING_EAF,       false, 20}},
+        {"relaxed",     {MMAP_EMOJI_NORMAL_NEUTRAL_EAF,       true,  20}},
+        {"confused",    {MMAP_EMOJI_NORMAL_CONFUSED_EAF,      true,  20}},
+        {"neutral",     {MMAP_EMOJI_NORMAL_NEUTRAL_EAF,       true,  20}},
+        {"idle",        {MMAP_EMOJI_NORMAL_NEUTRAL_EAF,       true,  20}},
     };
 
     auto it = emotion_map.find(emotion);
@@ -408,6 +422,9 @@ void EmoteDisplay::SetEmotion(const char* emotion)
 
 void EmoteDisplay::SetChatMessage(const char* role, const char* content)
 {
+    if (expression_test_running_) {
+        return;
+    }
     engine_->Lock();
     if (content && strlen(content) > 0) {
         gfx_label_set_text(obj_label_tips, content);
@@ -421,10 +438,13 @@ void EmoteDisplay::SetStatus(const char* status)
     if (!engine_) {
         return;
     }
+    if (expression_test_running_) {
+        return;
+    }
 
     if (!director_ && std::strcmp(status, "聆听中...") == 0) {
         SetUIDisplayMode(UIDisplayMode::SHOW_ANIM_TOP);
-        engine_->setEyes(MMAP_EMOJI_NORMAL_HAPPY_ONE_AAF, true, 20);
+        engine_->setEyes(MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20);
         engine_->SetIcon(MMAP_EMOJI_NORMAL_ICON_MIC_BIN);
     } else if (!director_ && std::strcmp(status, "待命") == 0) {
         SetUIDisplayMode(UIDisplayMode::SHOW_TIME);
@@ -454,9 +474,96 @@ void EmoteDisplay::InitializeDirector()
 #if CONFIG_ECHOEAR_EXPRESSION_DIRECTOR
     director_ = std::make_unique<ExpressionDirector>(
         [this](const ExpressionRenderModel& render_model) {
-            ApplyRenderModel(render_model);
+            if (!expression_test_running_) {
+                ApplyRenderModel(render_model);
+            }
         });
 #endif
+}
+
+bool EmoteDisplay::StartExpressionTest()
+{
+    bool expected = false;
+    if (!expression_test_running_.compare_exchange_strong(expected, true)) {
+        return false;
+    }
+
+    BaseType_t result = xTaskCreatePinnedToCore(
+        ExpressionTestTask,
+        "expression_test",
+        4 * 1024,
+        this,
+        4,
+        nullptr,
+        0);
+    if (result != pdPASS) {
+        expression_test_running_ = false;
+        ESP_LOGE(TAG, "Failed to create expression self-test task");
+        return false;
+    }
+    return true;
+}
+
+void EmoteDisplay::ExpressionTestTask(void* arg)
+{
+    static_cast<EmoteDisplay*>(arg)->RunExpressionTest();
+    vTaskDelete(nullptr);
+}
+
+void EmoteDisplay::RunExpressionTest()
+{
+    struct TestFrame {
+        const char* name;
+        ExpressionRenderModel render_model;
+    };
+
+    static const TestFrame frames[] = {
+        {"neutral", {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
+                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
+        {"winking", {MMAP_EMOJI_NORMAL_WINKING_EAF, true, 12,
+                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
+        {"confused", {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
+                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
+        {"Happy", {MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
+                   MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
+        {"cry", {MMAP_EMOJI_NORMAL_CRY_EAF, true, 20,
+                 MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
+        {"sleep", {MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
+                   MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
+        {"angry", {MMAP_EMOJI_NORMAL_ANGRY_ONE_AAF, true, 20,
+                   MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
+        {"shocked", {MMAP_EMOJI_NORMAL_SHOCKED_ONE_AAF, true, 20,
+                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTips}},
+    };
+
+    ESP_LOGI(TAG, "Expression self-test started (%u frames)",
+             static_cast<unsigned>(sizeof(frames) / sizeof(frames[0])));
+    for (const auto& frame : frames) {
+        Application::GetInstance().Schedule([this, frame]() {
+            ESP_LOGI(TAG, "Expression self-test frame: %s asset=%d",
+                     frame.name, frame.render_model.animation_asset_id);
+            ApplyExpressionTestFrame(frame.name, frame.render_model);
+        });
+        vTaskDelay(pdMS_TO_TICKS(2500));
+    }
+
+    Application::GetInstance().Schedule([this]() {
+        expression_test_running_ = false;
+        ESP_LOGI(TAG, "Expression self-test finished; restoring live state");
+        if (director_) {
+            director_->ForceRender();
+        }
+    });
+}
+
+void EmoteDisplay::ApplyExpressionTestFrame(const char* name,
+                                            const ExpressionRenderModel& render_model)
+{
+    ApplyRenderModel(render_model);
+    engine_->Lock();
+    gfx_label_set_text(obj_label_tips, name);
+    SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
+    engine_->Unlock();
 }
 
 void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
