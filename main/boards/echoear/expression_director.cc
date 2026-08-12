@@ -237,7 +237,7 @@ void ExpressionDirector::Recompute(const char* reason)
         if (idle_sleeping_) {
             next_render_model = {MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
                                  MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
-                                 ExpressionUiMode::kTime};
+                                 ExpressionUiMode::kImmersive};
             selected_source = "timer_sleep";
         } else if (idle_motion_.has_value()) {
             next_render_model = idle_motion_->render_model;
@@ -429,19 +429,19 @@ void ExpressionDirector::UpdateIdleState(int64_t now)
     static const IdleMotionPreset presets[] = {
         {"idle_blink", {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 20,
                         MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
-                        ExpressionUiMode::kTime}, 900},
+                        ExpressionUiMode::kImmersive}, 900},
         {"idle_slow_blink", {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 10,
                              MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
-                             ExpressionUiMode::kTime}, 1500},
+                             ExpressionUiMode::kImmersive}, 1500},
         {"idle_double_blink", {MMAP_EMOJI_NORMAL_WINKING_EAF, true, 28,
                                MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
-                               ExpressionUiMode::kTime}, 850},
+                               ExpressionUiMode::kImmersive}, 850},
         {"idle_observe", {MMAP_EMOJI_NORMAL_LISTEN_EAF, false, 14,
                           MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
-                          ExpressionUiMode::kTime}, 1400},
+                          ExpressionUiMode::kImmersive}, 1400},
         {"idle_curious", {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 12,
                           MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
-                          ExpressionUiMode::kTime}, 1200},
+                          ExpressionUiMode::kImmersive}, 1200},
     };
     constexpr int preset_count = sizeof(presets) / sizeof(presets[0]);
     int index = static_cast<int>(esp_random() % preset_count);
@@ -563,7 +563,7 @@ ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavio
                 MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kIdle:
         return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime, text};
+                MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive, text};
     case DisplayBehavior::kWakeAcknowledged:
         return {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 20,
                 MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text};
@@ -596,7 +596,7 @@ ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavio
     }
 
     return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
-            MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime, text};
+            MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive, text};
 }
 
 std::optional<ExpressionRenderModel> ExpressionDirector::GetEmotionRenderModel(const char* emotion)
@@ -606,47 +606,47 @@ std::optional<ExpressionRenderModel> ExpressionDirector::GetEmotionRenderModel(c
         std::strcmp(emotion, "confident") == 0 ||
         std::strcmp(emotion, "winking") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
-                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }
     if (std::strcmp(emotion, "laughing") == 0 ||
         std::strcmp(emotion, "funny") == 0 ||
         std::strcmp(emotion, "delicious") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
-                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }
     if (std::strcmp(emotion, "sad") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_SAD_EAF, true, 20,
-                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }
     if (std::strcmp(emotion, "crying") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_CRY_EAF, true, 20,
-                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }
     if (std::strcmp(emotion, "angry") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_ANGRY_EAF, true, 20,
-                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }
     if (std::strcmp(emotion, "surprised") == 0 || std::strcmp(emotion, "shocked") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_SHOCKED_EAF, true, 20,
-                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }
     if (std::strcmp(emotion, "thinking") == 0 || std::strcmp(emotion, "embarrassed") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
-                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }
     if (std::strcmp(emotion, "silly") == 0 || std::strcmp(emotion, "confused") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
-                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }
     if (std::strcmp(emotion, "sleepy") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
-                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }
     if (std::strcmp(emotion, "relaxed") == 0 ||
         std::strcmp(emotion, "neutral") == 0 ||
         std::strcmp(emotion, "idle") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
-                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kTime};
+                                     MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }
 
     return std::nullopt;
