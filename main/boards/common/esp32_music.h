@@ -46,6 +46,11 @@ private:
     std::atomic<int> current_lyric_index_;
     std::thread lyric_thread_;
     std::atomic<bool> is_lyric_running_;
+    std::thread metadata_thread_;
+    std::atomic<uint32_t> playback_generation_{0};
+    std::atomic<int> lyric_offset_ms_{600};
+    std::atomic<int> track_duration_ms_{0};
+    int last_progress_update_ms_ = -1;
     
     std::atomic<DisplayMode> display_mode_;
     std::atomic<bool> is_playing_;
@@ -82,6 +87,7 @@ private:
     bool ParseLyrics(const std::string& lyric_content);
     void LyricDisplayThread();
     void UpdateLyricDisplay(int64_t current_time_ms);
+    void LoadMetadata(uint32_t generation, const std::string& metadata_url);
     
     // ID3标签处理
     size_t SkipId3Tag(uint8_t* data, size_t size);
@@ -96,6 +102,7 @@ public:
   
     virtual std::string GetDownloadResult() override;
     virtual bool PlayUrl(const std::string& music_url, const std::string& song_name) override;
+    virtual bool Play(const MusicPlaybackRequest& request) override;
     
     // 新增方法
     virtual bool StartStreaming(const std::string& music_url) override;

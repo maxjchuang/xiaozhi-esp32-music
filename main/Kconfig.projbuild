@@ -353,6 +353,14 @@ config ECHOEAR_EXPRESSION_DEBUG_LOG
         Log idle scheduling and expiration details. State transitions remain
         available at info level when this option is disabled.
 
+config ECHOEAR_MUSIC_SCENE
+    bool "Enable EchoEar immersive music scene"
+    default y
+    depends on BOARD_TYPE_ECHOEAR
+    help
+        Show structured track information, a darkened cover background,
+        a slowly rotating record, and synchronized three-line lyrics.
+
 choice ESP_S3_LCD_EV_Board_Version_TYPE
     depends on BOARD_TYPE_ESP_S3_LCD_EV_Board
     prompt "EV_BOARD Type"

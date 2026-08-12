@@ -282,6 +282,25 @@ void Display::SetMusicInfo(const char* song_name) {
     }
 }
 
+void Display::EnterMusicScene(const MusicTrackInfo& track) {
+    SetMusicInfo(track.title.c_str());
+}
+
+void Display::SetMusicArtwork(const uint16_t*, int, int, const uint16_t*, int, int) {
+}
+
+void Display::SetMusicLyricWindow(const std::string&, const std::string& current,
+                                  const std::string&) {
+    SetChatMessage("lyric", current.c_str());
+}
+
+void Display::UpdateMusicProgress(int, int) {
+}
+
+void Display::ExitMusicScene() {
+    SetMusicInfo("");
+}
+
 void Display::SetTheme(const std::string& theme_name) {
     current_theme_name_ = theme_name;
     Settings settings("display", true);
