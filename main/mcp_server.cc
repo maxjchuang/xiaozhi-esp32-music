@@ -22,28 +22,7 @@
 
  namespace {
 
- bool IsPrivateAudioProxyUrl(const std::string& url) {
-     constexpr char kPrefix[] = "http://";
-     constexpr char kStreamMarker[] = ":8765/stream/";
-     if (url.compare(0, sizeof(kPrefix) - 1, kPrefix) != 0 || url.size() > 2048) {
-         return false;
-     }
-
-     const auto marker = url.find(kStreamMarker, sizeof(kPrefix) - 1);
-     if (marker == std::string::npos ||
-         url.find(kStreamMarker, marker + 1) != std::string::npos) {
-         return false;
-     }
-
-     const auto token = url.substr(marker + sizeof(kStreamMarker) - 1);
-     if (token.size() < 16 || token.size() > 128 ||
-         !std::all_of(token.begin(), token.end(), [](unsigned char ch) {
-             return std::isalnum(ch) || ch == '-' || ch == '_';
-         })) {
-         return false;
-     }
-
-     const auto address = url.substr(sizeof(kPrefix) - 1, marker - (sizeof(kPrefix) - 1));
+ bool IsPrivateIpv4Address(const std::string& address) {
      int octets[4] = {};
      size_t start = 0;
      for (size_t index = 0; index < 4; ++index) {
@@ -65,10 +44,48 @@
          octets[index] = value;
          start = end + 1;
      }
-
      return octets[0] == 10 ||
             (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) ||
             (octets[0] == 192 && octets[1] == 168);
+ }
+
+ bool IsPrivateMusicProxyUrl(const std::string& url, const std::string& resource) {
+     constexpr char kPrefix[] = "http://";
+     if (url.compare(0, sizeof(kPrefix) - 1, kPrefix) != 0 || url.size() > 2048) {
+         return false;
+     }
+     const std::string media_marker = ":8765/media/";
+     const auto marker = url.find(media_marker, sizeof(kPrefix) - 1);
+     if (marker == std::string::npos) {
+         return false;
+     }
+     const auto resource_marker = "/" + resource;
+     const auto resource_pos = url.find(resource_marker, marker + media_marker.size());
+     if (resource_pos == std::string::npos || resource_pos + resource_marker.size() != url.size()) {
+         return false;
+     }
+     const auto token = url.substr(marker + media_marker.size(),
+                                   resource_pos - marker - media_marker.size());
+     if (token.size() < 16 || token.size() > 128 ||
+         !std::all_of(token.begin(), token.end(), [](unsigned char ch) {
+             return std::isalnum(ch) || ch == '-' || ch == '_';
+         })) {
+         return false;
+     }
+
+     const auto address = url.substr(sizeof(kPrefix) - 1, marker - (sizeof(kPrefix) - 1));
+     return IsPrivateIpv4Address(address);
+ }
+
+ bool IsPrivateAudioProxyUrl(const std::string& url) {
+     constexpr char kLegacyMarker[] = ":8765/stream/";
+     const auto marker = url.find(kLegacyMarker);
+     if (marker != std::string::npos) {
+         const auto converted = url.substr(0, marker) + ":8765/media/" +
+                                url.substr(marker + sizeof(kLegacyMarker) - 1) + "/audio";
+         return IsPrivateMusicProxyUrl(converted, "audio");
+     }
+     return IsPrivateMusicProxyUrl(url, "audio");
  }
 
  bool IsApprovedAudioUrl(const std::string& url) {
@@ -257,17 +274,20 @@
              "  `play_type`: 必须为 'url'。\n"
              "  `url`: 要播放的 HTTP(S) MP3 地址。\n"
              "  `url_song_name`: 屏幕显示的歌曲名称。\n"
+             "  `metadata_url`: 可选的局域网媒体清单地址，用于封面、歌词和结构化歌曲信息。\n"
              "返回:\n"
              "  播放状态信息。",
              PropertyList({
                  Property("play_type", kPropertyTypeString, "url"),
                  Property("url", kPropertyTypeString),
-                 Property("url_song_name", kPropertyTypeString, "在线音频")
+                 Property("url_song_name", kPropertyTypeString, "在线音频"),
+                 Property("metadata_url", kPropertyTypeString, "")
              }),
              [music](const PropertyList& properties) -> ReturnValue {
                  auto play_type = properties["play_type"].value<std::string>();
                  auto url = properties["url"].value<std::string>();
                  auto song_name = properties["url_song_name"].value<std::string>();
+                 auto metadata_url = properties["metadata_url"].value<std::string>();
 
                  std::transform(play_type.begin(), play_type.end(), play_type.begin(), [](unsigned char ch) {
                      return static_cast<char>(std::tolower(ch));
@@ -281,7 +301,10 @@
                  if (song_name.size() > 192 || ContainsControlCharacter(song_name)) {
                      return "{\"success\": false, \"message\": \"歌曲名称无效\"}";
                  }
-                 if (!music->PlayUrl(url, song_name)) {
+                 if (!metadata_url.empty() && !IsPrivateMusicProxyUrl(metadata_url, "manifest.json")) {
+                     return "{\"success\": false, \"message\": \"媒体清单地址无效\"}";
+                 }
+                 if (!music->Play({url, song_name, metadata_url})) {
                      return "{\"success\": false, \"message\": \"启动音频流失败\"}";
                  }
                  return "{\"success\": true, \"message\": \"音频开始播放\"}";

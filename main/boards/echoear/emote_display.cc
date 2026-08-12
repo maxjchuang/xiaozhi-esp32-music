@@ -1,11 +1,13 @@
 #include "emote_display.h"
 
 #include <cstring>
+#include <cmath>
 #include <memory>
 #include <unordered_map>
 #include <tuple>
 #include <esp_log.h>
 #include <esp_lcd_panel_io.h>
+#include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <sys/time.h>
@@ -28,6 +30,14 @@ static gfx_obj_t* obj_label_time = nullptr;
 static gfx_obj_t* obj_anim_eye = nullptr;
 static gfx_obj_t* obj_anim_mic = nullptr;
 static gfx_obj_t* obj_img_icon = nullptr;
+static gfx_obj_t* obj_img_music_background = nullptr;
+static gfx_obj_t* obj_img_music_disc = nullptr;
+static gfx_obj_t* obj_label_music_title = nullptr;
+static gfx_obj_t* obj_label_music_artist = nullptr;
+static gfx_obj_t* obj_label_music_previous = nullptr;
+static gfx_obj_t* obj_label_music_current = nullptr;
+static gfx_obj_t* obj_label_music_next = nullptr;
+static gfx_obj_t* obj_label_music_progress = nullptr;
 static gfx_image_dsc_t icon_img_dsc;
 static gfx_font_t font_tips = nullptr;
 static gfx_font_t font_time = nullptr;
@@ -209,6 +219,45 @@ static void InitializeIcon(gfx_handle_t engine_handle, mmap_assets_handle_t asse
     }
 }
 
+static void InitializeMusicUi(gfx_handle_t engine_handle)
+{
+    obj_img_music_disc = gfx_img_create(engine_handle);
+    gfx_obj_align(obj_img_music_disc, GFX_ALIGN_CENTER, 0, -8);
+
+    auto create_label = [engine_handle](gfx_obj_t** object, int y, int height,
+                                       gfx_font_t font, gfx_color_t color) {
+        *object = gfx_label_create(engine_handle);
+        gfx_obj_align(*object, GFX_ALIGN_TOP_MID, 0, y);
+        gfx_obj_set_size(*object, 332, height);
+        gfx_label_set_font(*object, font);
+        gfx_label_set_color(*object, color);
+        gfx_label_set_text_align(*object, GFX_TEXT_ALIGN_CENTER);
+        gfx_label_set_long_mode(*object, GFX_LABEL_LONG_SCROLL);
+        gfx_label_set_scroll_speed(*object, 24);
+        gfx_label_set_scroll_loop(*object, true);
+        gfx_obj_set_visible(*object, false);
+    };
+    create_label(&obj_label_music_title, 10, 28, font_tips, GFX_COLOR_HEX(0xFFFFFF));
+    create_label(&obj_label_music_artist, 38, 24, font_tips, GFX_COLOR_HEX(0xB8C2D8));
+    create_label(&obj_label_music_previous, 260, 24, font_tips, GFX_COLOR_HEX(0x8490A8));
+    create_label(&obj_label_music_current, 288, 28, font_tips, GFX_COLOR_HEX(0xFFFFFF));
+    create_label(&obj_label_music_next, 318, 24, font_tips, GFX_COLOR_HEX(0x8490A8));
+    create_label(&obj_label_music_progress, 343, 16, font_tips, GFX_COLOR_HEX(0x9AA6BC));
+    gfx_obj_set_visible(obj_img_music_disc, false);
+}
+
+static void SetMusicObjectsVisible(bool visible)
+{
+    gfx_obj_set_visible(obj_img_music_background, visible);
+    gfx_obj_set_visible(obj_img_music_disc, visible);
+    gfx_obj_set_visible(obj_label_music_title, visible);
+    gfx_obj_set_visible(obj_label_music_artist, visible);
+    gfx_obj_set_visible(obj_label_music_previous, visible);
+    gfx_obj_set_visible(obj_label_music_current, visible);
+    gfx_obj_set_visible(obj_label_music_next, visible);
+    gfx_obj_set_visible(obj_label_music_progress, visible);
+}
+
 static void RegisterCallbacks(esp_lcd_panel_io_handle_t panel_io, gfx_handle_t engine_handle)
 {
     const esp_lcd_panel_io_callbacks_t cbs = {
@@ -250,11 +299,15 @@ EmoteEngine::EmoteEngine(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t
     gfx_emote_set_bg_color(engine_handle_, GFX_COLOR_HEX(0x000000));
 
     // Initialize all UI components
+    obj_img_music_background = gfx_img_create(engine_handle_);
+    gfx_obj_align(obj_img_music_background, GFX_ALIGN_TOP_LEFT, 0, 0);
+    gfx_obj_set_visible(obj_img_music_background, false);
     InitializeEyeAnimation(engine_handle_, assets_handle_);
     InitializeFonts(assets_handle_);
     InitializeLabels(engine_handle_);
     InitializeMicAnimation(engine_handle_, assets_handle_);
     InitializeIcon(engine_handle_, assets_handle_);
+    InitializeMusicUi(engine_handle_);
 
     current_icon_type = MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN;
     SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
@@ -264,10 +317,31 @@ EmoteEngine::EmoteEngine(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t
     gfx_emote_unlock(engine_handle_);
 
     RegisterCallbacks(panel_io, engine_handle_);
+
+    const esp_timer_create_args_t rotation_timer_args = {
+        .callback = MusicRotationTimer,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "music_disc",
+        .skip_unhandled_events = true,
+    };
+    if (esp_timer_create(&rotation_timer_args, &music_rotation_timer_) != ESP_OK) {
+        music_rotation_timer_ = nullptr;
+    }
 }
 
 EmoteEngine::~EmoteEngine()
 {
+    if (music_rotation_timer_) {
+        esp_timer_stop(music_rotation_timer_);
+        esp_timer_delete(music_rotation_timer_);
+        music_rotation_timer_ = nullptr;
+    }
+    if (engine_handle_) {
+        Lock();
+        ClearMusicArtworkLocked();
+        Unlock();
+    }
     if (engine_handle_) {
         gfx_emote_deinit(engine_handle_);
         engine_handle_ = nullptr;
@@ -287,6 +361,265 @@ EmoteEngine::~EmoteEngine()
         mmap_assets_del(assets_handle_);
         assets_handle_ = nullptr;
     }
+}
+
+void EmoteEngine::ClearMusicArtworkLocked()
+{
+    gfx_img_set_src(obj_img_music_background, nullptr);
+    gfx_img_set_src(obj_img_music_disc, nullptr);
+    if (music_background_data_) {
+        heap_caps_free(music_background_data_);
+        music_background_data_ = nullptr;
+    }
+    if (music_disc_source_) {
+        heap_caps_free(music_disc_source_);
+        music_disc_source_ = nullptr;
+    }
+    if (music_disc_frame_) {
+        heap_caps_free(music_disc_frame_);
+        music_disc_frame_ = nullptr;
+    }
+    music_background_dsc_ = {};
+    music_disc_dsc_ = {};
+}
+
+void EmoteEngine::CreateFallbackDiscLocked()
+{
+    constexpr int size = 192;
+    constexpr size_t pixels = size * size;
+    music_disc_source_ = static_cast<uint8_t*>(heap_caps_malloc(pixels * 2,
+                                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    music_disc_frame_ = static_cast<uint8_t*>(heap_caps_malloc(pixels * 3,
+                                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!music_disc_source_ || !music_disc_frame_) {
+        return;
+    }
+    auto* source = reinterpret_cast<uint16_t*>(music_disc_source_);
+    auto* frame = reinterpret_cast<uint16_t*>(music_disc_frame_);
+    auto* alpha = music_disc_frame_ + pixels * 2;
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const int dx = x - size / 2;
+            const int dy = y - size / 2;
+            const int radius2 = dx * dx + dy * dy;
+            const size_t index = y * size + x;
+            const bool inside = radius2 <= 94 * 94;
+            const bool label = radius2 <= 28 * 28;
+            source[index] = label ? 0x4A9F : ((radius2 / 90) % 2 ? 0x18E3 : 0x2104);
+            frame[index] = source[index];
+            alpha[index] = inside ? 0xFF : 0;
+        }
+    }
+    music_disc_dsc_.header.magic = C_ARRAY_HEADER_MAGIC;
+    music_disc_dsc_.header.cf = GFX_COLOR_FORMAT_RGB565A8;
+    music_disc_dsc_.header.w = size;
+    music_disc_dsc_.header.h = size;
+    music_disc_dsc_.header.stride = size * 2;
+    music_disc_dsc_.data_size = pixels * 3;
+    music_disc_dsc_.data = music_disc_frame_;
+    gfx_img_set_src(obj_img_music_disc, &music_disc_dsc_);
+}
+
+void EmoteEngine::EnterMusicScene(const MusicTrackInfo& track)
+{
+    if (!engine_handle_) {
+        return;
+    }
+    Lock();
+    music_scene_active_ = true;
+    music_disc_angle_ = 0;
+    ClearMusicArtworkLocked();
+    CreateFallbackDiscLocked();
+    gfx_emote_set_bg_color(engine_handle_, GFX_COLOR_HEX(0x08101E));
+    gfx_obj_set_visible(obj_anim_eye, false);
+    gfx_obj_set_visible(obj_anim_mic, false);
+    gfx_obj_set_visible(obj_img_icon, false);
+    gfx_obj_set_visible(obj_label_tips, false);
+    gfx_obj_set_visible(obj_label_time, false);
+    gfx_label_set_text(obj_label_music_title, track.title.c_str());
+    gfx_label_set_text(obj_label_music_artist, track.artist.empty() ? "正在播放" : track.artist.c_str());
+    gfx_label_set_text(obj_label_music_previous, "");
+    gfx_label_set_text(obj_label_music_current, "暂无歌词");
+    gfx_label_set_text(obj_label_music_next, "");
+    gfx_label_set_text(obj_label_music_progress, "--:--");
+    SetMusicObjectsVisible(true);
+    gfx_obj_set_visible(obj_img_music_background, false);
+    Unlock();
+    if (music_rotation_timer_) {
+        esp_timer_stop(music_rotation_timer_);
+        esp_timer_start_periodic(music_rotation_timer_, 200 * 1000);
+    }
+}
+
+void EmoteEngine::SetMusicArtwork(const uint16_t* background, int background_width,
+                                  int background_height, const uint16_t* disc,
+                                  int disc_width, int disc_height)
+{
+    if (!music_scene_active_ || !background || !disc || background_width != 360 ||
+        background_height != 360 || disc_width != 192 || disc_height != 192) {
+        return;
+    }
+    const size_t background_pixels = background_width * background_height;
+    const size_t disc_pixels = disc_width * disc_height;
+    auto* new_background = static_cast<uint8_t*>(heap_caps_malloc(background_pixels * 3,
+                                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    auto* new_disc_source = static_cast<uint8_t*>(heap_caps_malloc(disc_pixels * 2,
+                                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    auto* new_disc_frame = static_cast<uint8_t*>(heap_caps_malloc(disc_pixels * 3,
+                                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!new_background || !new_disc_source || !new_disc_frame) {
+        heap_caps_free(new_background);
+        heap_caps_free(new_disc_source);
+        heap_caps_free(new_disc_frame);
+        return;
+    }
+    memcpy(new_background, background, background_pixels * 2);
+    memset(new_background + background_pixels * 2, 0xFF, background_pixels);
+    memcpy(new_disc_source, disc, disc_pixels * 2);
+    memcpy(new_disc_frame, disc, disc_pixels * 2);
+    auto* disc_alpha = new_disc_frame + disc_pixels * 2;
+    for (int y = 0; y < disc_height; ++y) {
+        for (int x = 0; x < disc_width; ++x) {
+            const int dx = x - disc_width / 2;
+            const int dy = y - disc_height / 2;
+            disc_alpha[y * disc_width + x] = dx * dx + dy * dy <= 94 * 94 ? 0xFF : 0;
+        }
+    }
+
+    Lock();
+    ClearMusicArtworkLocked();
+    music_background_data_ = new_background;
+    music_disc_source_ = new_disc_source;
+    music_disc_frame_ = new_disc_frame;
+    music_background_dsc_.header.magic = C_ARRAY_HEADER_MAGIC;
+    music_background_dsc_.header.cf = GFX_COLOR_FORMAT_RGB565A8;
+    music_background_dsc_.header.w = background_width;
+    music_background_dsc_.header.h = background_height;
+    music_background_dsc_.header.stride = background_width * 2;
+    music_background_dsc_.data_size = background_pixels * 3;
+    music_background_dsc_.data = music_background_data_;
+    music_disc_dsc_.header.magic = C_ARRAY_HEADER_MAGIC;
+    music_disc_dsc_.header.cf = GFX_COLOR_FORMAT_RGB565A8;
+    music_disc_dsc_.header.w = disc_width;
+    music_disc_dsc_.header.h = disc_height;
+    music_disc_dsc_.header.stride = disc_width * 2;
+    music_disc_dsc_.data_size = disc_pixels * 3;
+    music_disc_dsc_.data = music_disc_frame_;
+    gfx_img_set_src(obj_img_music_background, &music_background_dsc_);
+    gfx_img_set_src(obj_img_music_disc, &music_disc_dsc_);
+    gfx_obj_set_visible(obj_img_music_background, true);
+    gfx_obj_set_visible(obj_img_music_disc, true);
+    Unlock();
+}
+
+void EmoteEngine::SetMusicLyrics(const std::string& previous, const std::string& current,
+                                 const std::string& next)
+{
+    if (!music_scene_active_) {
+        return;
+    }
+    Lock();
+    gfx_label_set_text(obj_label_music_previous, previous.c_str());
+    gfx_label_set_text(obj_label_music_current, current.empty() ? "暂无歌词" : current.c_str());
+    gfx_label_set_text(obj_label_music_next, next.c_str());
+    Unlock();
+}
+
+void EmoteEngine::SetMusicProgress(int position_ms, int duration_ms)
+{
+    if (!music_scene_active_) {
+        return;
+    }
+    char text[24];
+    const int position_seconds = std::max(0, position_ms / 1000);
+    if (duration_ms > 0) {
+        const int duration_seconds = duration_ms / 1000;
+        snprintf(text, sizeof(text), "%02d:%02d / %02d:%02d",
+                 position_seconds / 60, position_seconds % 60,
+                 duration_seconds / 60, duration_seconds % 60);
+    } else {
+        snprintf(text, sizeof(text), "%02d:%02d", position_seconds / 60,
+                 position_seconds % 60);
+    }
+    Lock();
+    gfx_label_set_text(obj_label_music_progress, text);
+    Unlock();
+}
+
+void EmoteEngine::SetMusicOverlayVisible(bool visible)
+{
+    if (!music_scene_active_) {
+        return;
+    }
+    Lock();
+    SetMusicObjectsVisible(visible);
+    gfx_obj_set_visible(obj_anim_eye, !visible);
+    gfx_obj_set_visible(obj_img_icon, !visible);
+    gfx_obj_set_visible(obj_label_tips, !visible);
+    Unlock();
+}
+
+void EmoteEngine::ExitMusicScene()
+{
+    if (music_rotation_timer_) {
+        esp_timer_stop(music_rotation_timer_);
+    }
+    Lock();
+    music_scene_active_ = false;
+    SetMusicObjectsVisible(false);
+    ClearMusicArtworkLocked();
+    gfx_emote_set_bg_color(engine_handle_, GFX_COLOR_HEX(0x000000));
+    gfx_obj_set_visible(obj_anim_eye, true);
+    gfx_obj_set_visible(obj_img_icon, true);
+    gfx_obj_set_visible(obj_label_tips, true);
+    Unlock();
+}
+
+void EmoteEngine::MusicRotationTimer(void* arg)
+{
+    static_cast<EmoteEngine*>(arg)->RotateMusicDisc();
+}
+
+void EmoteEngine::RotateMusicDisc()
+{
+    if (!music_scene_active_ || !music_disc_source_ || !music_disc_frame_) {
+        return;
+    }
+    constexpr int size = 192;
+    constexpr int center = size / 2;
+    constexpr size_t pixels = size * size;
+    music_disc_angle_ += 2.4f;
+    if (music_disc_angle_ >= 360.0f) {
+        music_disc_angle_ -= 360.0f;
+    }
+    const float radians = -music_disc_angle_ * 3.14159265f / 180.0f;
+    const int32_t cosine = static_cast<int32_t>(cosf(radians) * 32768);
+    const int32_t sine = static_cast<int32_t>(sinf(radians) * 32768);
+    auto* source = reinterpret_cast<uint16_t*>(music_disc_source_);
+    auto* frame = reinterpret_cast<uint16_t*>(music_disc_frame_);
+    auto* alpha = music_disc_frame_ + pixels * 2;
+    Lock();
+    for (int y = 0; y < size; ++y) {
+        const int dy = y - center;
+        for (int x = 0; x < size; ++x) {
+            const int dx = x - center;
+            const size_t index = y * size + x;
+            if (dx * dx + dy * dy > 94 * 94) {
+                alpha[index] = 0;
+                continue;
+            }
+            const int source_x = center + ((cosine * dx - sine * dy) >> 15);
+            const int source_y = center + ((sine * dx + cosine * dy) >> 15);
+            if (source_x >= 0 && source_x < size && source_y >= 0 && source_y < size) {
+                frame[index] = source[source_y * size + source_x];
+                alpha[index] = 0xFF;
+            } else {
+                alpha[index] = 0;
+            }
+        }
+    }
+    obj_img_music_disc->is_dirty = true;
+    Unlock();
 }
 
 void EmoteEngine::setEyes(int aaf, bool repeat, int fps)
@@ -397,6 +730,13 @@ void EmoteDisplay::SetBehavior(const DisplayBehaviorRequest& request)
     } else {
         director_->PostTransientBehavior(request);
     }
+
+#if CONFIG_ECHOEAR_MUSIC_SCENE
+    if (engine_ && engine_->IsMusicSceneActive() &&
+        request.source == DisplayBehaviorSource::kDeviceState) {
+        engine_->SetMusicOverlayVisible(request.behavior == DisplayBehavior::kIdle);
+    }
+#endif
 }
 
 void EmoteDisplay::SetEmotion(const char* emotion)
@@ -456,6 +796,65 @@ void EmoteDisplay::SetChatMessage(const char* role, const char* content)
         SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
     }
     engine_->Unlock();
+}
+
+void EmoteDisplay::EnterMusicScene(const MusicTrackInfo& track)
+{
+#if CONFIG_ECHOEAR_MUSIC_SCENE
+    if (engine_) {
+        engine_->EnterMusicScene(track);
+    }
+#else
+    Display::EnterMusicScene(track);
+#endif
+}
+
+void EmoteDisplay::SetMusicArtwork(const uint16_t* background, int background_width,
+                                   int background_height, const uint16_t* disc,
+                                   int disc_width, int disc_height)
+{
+#if CONFIG_ECHOEAR_MUSIC_SCENE
+    if (engine_) {
+        engine_->SetMusicArtwork(background, background_width, background_height,
+                                 disc, disc_width, disc_height);
+    }
+#endif
+}
+
+void EmoteDisplay::SetMusicLyricWindow(const std::string& previous,
+                                       const std::string& current,
+                                       const std::string& next)
+{
+#if CONFIG_ECHOEAR_MUSIC_SCENE
+    if (engine_) {
+        engine_->SetMusicLyrics(previous, current, next);
+    }
+#else
+    Display::SetMusicLyricWindow(previous, current, next);
+#endif
+}
+
+void EmoteDisplay::UpdateMusicProgress(int position_ms, int duration_ms)
+{
+#if CONFIG_ECHOEAR_MUSIC_SCENE
+    if (engine_) {
+        engine_->SetMusicProgress(position_ms, duration_ms);
+    }
+#endif
+}
+
+void EmoteDisplay::ExitMusicScene()
+{
+#if CONFIG_ECHOEAR_MUSIC_SCENE
+    if (engine_) {
+        engine_->ExitMusicScene();
+    }
+    if (director_) {
+        director_->ForceRender();
+    }
+#else
+    Display::ExitMusicScene();
+#endif
 }
 
 void EmoteDisplay::SetStatus(const char* status)

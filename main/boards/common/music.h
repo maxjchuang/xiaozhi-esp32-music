@@ -3,6 +3,12 @@
 
 #include <string>
 
+struct MusicPlaybackRequest {
+    std::string audio_url;
+    std::string song_name;
+    std::string metadata_url;
+};
+
 class Music {
 public:
     virtual ~Music() = default;  // 添加虚析构函数
@@ -10,6 +16,9 @@ public:
     virtual bool Download(const std::string& song_name, const std::string& artist_name = "") = 0;
     virtual std::string GetDownloadResult() = 0;
     virtual bool PlayUrl(const std::string& music_url, const std::string& song_name) = 0;
+    virtual bool Play(const MusicPlaybackRequest& request) {
+        return PlayUrl(request.audio_url, request.song_name);
+    }
     
     // 新增流式播放相关方法
     virtual bool StartStreaming(const std::string& music_url) = 0;

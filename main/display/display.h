@@ -17,6 +17,13 @@ struct DisplayFonts {
     const lv_font_t* emoji_font = nullptr;
 };
 
+struct MusicTrackInfo {
+    std::string title;
+    std::string artist;
+    std::string album;
+    int duration_ms = 0;
+};
+
 class Display {
 public:
     Display();
@@ -29,6 +36,15 @@ public:
     virtual void SetEmotion(const char* emotion);
     virtual void SetChatMessage(const char* role, const char* content);
     virtual void SetMusicInfo(const char* song_name);
+    virtual void EnterMusicScene(const MusicTrackInfo& track);
+    virtual void SetMusicArtwork(const uint16_t* background, int background_width,
+                                 int background_height, const uint16_t* disc,
+                                 int disc_width, int disc_height);
+    virtual void SetMusicLyricWindow(const std::string& previous,
+                                     const std::string& current,
+                                     const std::string& next);
+    virtual void UpdateMusicProgress(int position_ms, int duration_ms);
+    virtual void ExitMusicScene();
     virtual void SetIcon(const char* icon);
     virtual void SetPreviewImage(const lv_img_dsc_t* image);
     virtual void SetTheme(const std::string& theme_name);

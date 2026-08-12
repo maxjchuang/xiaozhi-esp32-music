@@ -61,6 +61,16 @@ EchoEar 支持两种不同的UI显示风格，通过修改代码中的宏定义�
 
 > **说明**: EchoEar 使用16MB Flash，需要使用专门的分区表配置来合理分配存储空间给应用程序、OTA更新、资源文件等。
 
+### 沉浸式音乐界面
+
+`Xiaozhi Assistant` → `Enable EchoEar immersive music scene` 默认开启。配合新版 `xiaozhi-music-mcp` 的 `metadata_url`，播放时可显示暗化封面、旋转唱片、歌曲信息和三行同步歌词。缺少元数据时自动使用默认唱片和“暂无歌词”，不影响音频播放。
+
+产品、技术和验收说明见：
+
+- `docs/echoear-music-phase-2-product-design.md`
+- `docs/echoear-music-phase-2-technical-design.md`
+- `docs/echoear-music-phase-2-acceptance.md`
+
 按 `S` 保存，按 `Q` 退出。
 
 **编译**

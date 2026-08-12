@@ -12,18 +12,112 @@
 #include <esp_timer.h>
 #include <mbedtls/sha256.h>
 #include <cJSON.h>
+#include <jpeg_decoder.h>
 #include <cstring>
 #include <chrono>
 #include <sstream>
 #include <algorithm>
 #include <cctype> // 为isdigit函数
 #include <thread> // 为线程ID比较
+#include <memory>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
 #define TAG "Esp32Music"
 
 namespace {
+
+constexpr size_t kMaxManifestBytes = 64 * 1024;
+constexpr size_t kMaxArtworkBytes = 512 * 1024;
+
+struct HeapCapsDeleter {
+    void operator()(uint8_t* value) const {
+        if (value) {
+            heap_caps_free(value);
+        }
+    }
+};
+
+using HeapCapsBuffer = std::unique_ptr<uint8_t, HeapCapsDeleter>;
+
+bool DownloadHttpResource(const std::string& url, size_t limit, const char* accept,
+                          std::vector<uint8_t>& output)
+{
+    auto network = Board::GetInstance().GetNetwork();
+    auto http = network->CreateHttp(0);
+    if (!http) {
+        return false;
+    }
+    http->SetHeader("User-Agent", "EchoEar-Music/2.0");
+    http->SetHeader("Accept", accept);
+    if (!http->Open("GET", url)) {
+        return false;
+    }
+    const int status = http->GetStatusCode();
+    if (status < 200 || status >= 300) {
+        http->Close();
+        return false;
+    }
+    output.clear();
+    output.reserve(std::min(limit, static_cast<size_t>(64 * 1024)));
+    uint8_t chunk[2048];
+    while (true) {
+        const int count = http->Read(reinterpret_cast<char*>(chunk), sizeof(chunk));
+        if (count <= 0) {
+            break;
+        }
+        if (output.size() + static_cast<size_t>(count) > limit) {
+            http->Close();
+            output.clear();
+            return false;
+        }
+        output.insert(output.end(), chunk, chunk + count);
+    }
+    http->Close();
+    return !output.empty();
+}
+
+bool IsManifestResource(const std::string& manifest_url, const std::string& resource_url,
+                        const char* expected_name)
+{
+    constexpr char suffix[] = "/manifest.json";
+    if (manifest_url.size() <= sizeof(suffix) - 1 ||
+        manifest_url.compare(manifest_url.size() - (sizeof(suffix) - 1),
+                             sizeof(suffix) - 1, suffix) != 0) {
+        return false;
+    }
+    const auto base = manifest_url.substr(0, manifest_url.size() - (sizeof(suffix) - 1));
+    return resource_url == base + "/" + expected_name;
+}
+
+bool DecodeJpegRgb565(const std::vector<uint8_t>& jpeg, int expected_width,
+                      int expected_height, HeapCapsBuffer& pixels)
+{
+    esp_jpeg_image_cfg_t config = {};
+    config.indata = const_cast<uint8_t*>(jpeg.data());
+    config.indata_size = jpeg.size();
+    config.out_format = JPEG_IMAGE_FORMAT_RGB565;
+    config.out_scale = JPEG_IMAGE_SCALE_0;
+    esp_jpeg_image_output_t info = {};
+    if (esp_jpeg_get_image_info(&config, &info) != ESP_OK ||
+        info.width != expected_width || info.height != expected_height ||
+        info.output_len != static_cast<size_t>(expected_width * expected_height * 2)) {
+        return false;
+    }
+    pixels.reset(static_cast<uint8_t*>(heap_caps_malloc(info.output_len,
+                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)));
+    if (!pixels) {
+        return false;
+    }
+    config.outbuf = pixels.get();
+    config.outbuf_size = info.output_len;
+    config.flags.swap_color_bytes = 0;
+    if (esp_jpeg_decode(&config, &info) != ESP_OK) {
+        pixels.reset();
+        return false;
+    }
+    return true;
+}
 
 void PostMusicBehavior(DisplayBehavior behavior, const std::string& detail = {}, int duration_ms = 0)
 {
@@ -243,6 +337,10 @@ Esp32Music::~Esp32Music()
     is_downloading_ = false;
     is_playing_ = false;
     is_lyric_running_ = false;
+    ++playback_generation_;
+    if (metadata_thread_.joinable()) {
+        metadata_thread_.join();
+    }
 
     // 通知所有等待的线程
     {
@@ -523,9 +621,21 @@ std::string Esp32Music::GetDownloadResult()
 
 bool Esp32Music::PlayUrl(const std::string &music_url, const std::string &song_name)
 {
-    current_music_url_ = music_url;
-    current_song_name_ = song_name.empty() ? "在线音频" : song_name;
+    return Play({music_url, song_name, ""});
+}
+
+bool Esp32Music::Play(const MusicPlaybackRequest& request)
+{
+    const uint32_t generation = ++playback_generation_;
+    if (metadata_thread_.joinable()) {
+        metadata_thread_.join();
+    }
+    current_music_url_ = request.audio_url;
+    current_song_name_ = request.song_name.empty() ? "在线音频" : request.song_name;
     song_name_displayed_ = false;
+    lyric_offset_ms_ = 600;
+    track_duration_ms_ = 0;
+    last_progress_update_ms_ = -1;
 
     // URL playback has no lyric side channel. Stop an earlier lyric task so
     // stale lyrics from the previous song cannot remain on screen.
@@ -541,8 +651,119 @@ bool Esp32Music::PlayUrl(const std::string &music_url, const std::string &song_n
         lyrics_.clear();
     }
 
+    auto display = Board::GetInstance().GetDisplay();
+    if (display) {
+        display->EnterMusicScene({current_song_name_, "", "", 0});
+        display->SetMusicLyricWindow("", "暂无歌词", "");
+    }
+
     ESP_LOGI(TAG, "Starting approved URL playback: %s", current_song_name_.c_str());
-    return StartStreaming(current_music_url_);
+    if (!StartStreaming(current_music_url_)) {
+        if (display) {
+            display->ExitMusicScene();
+        }
+        return false;
+    }
+    if (!request.metadata_url.empty()) {
+        esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
+        cfg.stack_size = 8192;
+        cfg.prio = 3;
+        cfg.thread_name = "music_metadata";
+        esp_pthread_set_cfg(&cfg);
+        metadata_thread_ = std::thread(&Esp32Music::LoadMetadata, this, generation,
+                                       request.metadata_url);
+    }
+    return true;
+}
+
+void Esp32Music::LoadMetadata(uint32_t generation, const std::string& metadata_url)
+{
+    std::vector<uint8_t> body;
+    if (!DownloadHttpResource(metadata_url, kMaxManifestBytes, "application/json", body) ||
+        generation != playback_generation_) {
+        ESP_LOGW(TAG, "Music metadata unavailable; keeping fallback scene");
+        return;
+    }
+    body.push_back('\0');
+    std::unique_ptr<cJSON, decltype(&cJSON_Delete)> root(
+        cJSON_Parse(reinterpret_cast<const char*>(body.data())), cJSON_Delete);
+    if (!root || cJSON_GetObjectItem(root.get(), "schema_version") == nullptr ||
+        cJSON_GetObjectItem(root.get(), "schema_version")->valueint != 1) {
+        ESP_LOGW(TAG, "Unsupported music manifest");
+        return;
+    }
+
+    auto json_string = [&root](const char* key) -> std::string {
+        auto* item = cJSON_GetObjectItem(root.get(), key);
+        return cJSON_IsString(item) && item->valuestring ? item->valuestring : "";
+    };
+    MusicTrackInfo info;
+    info.title = json_string("title");
+    info.artist = json_string("artist");
+    info.album = json_string("album");
+    auto* duration = cJSON_GetObjectItem(root.get(), "duration_ms");
+    info.duration_ms = cJSON_IsNumber(duration) ? std::max(0, duration->valueint) : 0;
+    if (info.title.empty()) {
+        info.title = current_song_name_;
+    }
+    if (info.title.size() > 192 || info.artist.size() > 192 || info.album.size() > 192) {
+        ESP_LOGW(TAG, "Music manifest text is too long");
+        return;
+    }
+    track_duration_ms_ = info.duration_ms;
+    if (auto display = Board::GetInstance().GetDisplay()) {
+        display->EnterMusicScene(info);
+    }
+
+    std::string lyric_url;
+    auto* lyrics = cJSON_GetObjectItem(root.get(), "lyrics");
+    if (cJSON_IsObject(lyrics)) {
+        auto* url = cJSON_GetObjectItem(lyrics, "url");
+        auto* offset = cJSON_GetObjectItem(lyrics, "offset_ms");
+        if (cJSON_IsString(url) && url->valuestring &&
+            IsManifestResource(metadata_url, url->valuestring, "lyrics.lrc")) {
+            lyric_url = url->valuestring;
+        }
+        if (cJSON_IsNumber(offset) && offset->valueint >= -5000 && offset->valueint <= 5000) {
+            lyric_offset_ms_ = offset->valueint;
+        }
+    }
+    if (!lyric_url.empty() && generation == playback_generation_) {
+        current_lyric_url_ = lyric_url;
+        is_lyric_running_ = true;
+        current_lyric_index_ = -1;
+        lyric_thread_ = std::thread(&Esp32Music::LyricDisplayThread, this);
+    }
+
+    auto* artwork = cJSON_GetObjectItem(root.get(), "artwork");
+    if (!cJSON_IsObject(artwork)) {
+        return;
+    }
+    auto* background_item = cJSON_GetObjectItem(artwork, "background_url");
+    auto* disc_item = cJSON_GetObjectItem(artwork, "disc_url");
+    if (!cJSON_IsString(background_item) || !background_item->valuestring ||
+        !cJSON_IsString(disc_item) || !disc_item->valuestring ||
+        !IsManifestResource(metadata_url, background_item->valuestring, "background.jpg") ||
+        !IsManifestResource(metadata_url, disc_item->valuestring, "disc.jpg")) {
+        return;
+    }
+    std::vector<uint8_t> background_jpeg;
+    std::vector<uint8_t> disc_jpeg;
+    HeapCapsBuffer background_pixels;
+    HeapCapsBuffer disc_pixels;
+    if (!DownloadHttpResource(background_item->valuestring, kMaxArtworkBytes, "image/jpeg",
+                              background_jpeg) ||
+        !DownloadHttpResource(disc_item->valuestring, kMaxArtworkBytes, "image/jpeg", disc_jpeg) ||
+        generation != playback_generation_ ||
+        !DecodeJpegRgb565(background_jpeg, 360, 360, background_pixels) ||
+        !DecodeJpegRgb565(disc_jpeg, 192, 192, disc_pixels)) {
+        ESP_LOGW(TAG, "Music artwork unavailable; keeping fallback theme");
+        return;
+    }
+    if (auto display = Board::GetInstance().GetDisplay()) {
+        display->SetMusicArtwork(reinterpret_cast<uint16_t*>(background_pixels.get()), 360, 360,
+                                 reinterpret_cast<uint16_t*>(disc_pixels.get()), 192, 192);
+    }
 }
 
 // 开始流式播放
@@ -612,6 +833,11 @@ bool Esp32Music::StopStreaming()
              is_downloading_.load(), is_playing_.load());
 
     PostMusicBehavior(DisplayBehavior::kIdle, current_song_name_);
+    ++playback_generation_;
+    if (metadata_thread_.joinable() &&
+        metadata_thread_.get_id() != std::this_thread::get_id()) {
+        metadata_thread_.join();
+    }
 
     // 重置采样率到原始值
     ResetSampleRate();
@@ -620,6 +846,9 @@ bool Esp32Music::StopStreaming()
     if (!is_playing_ && !is_downloading_)
     {
         ESP_LOGW(TAG, "No streaming in progress");
+        if (auto display = Board::GetInstance().GetDisplay()) {
+            display->ExitMusicScene();
+        }
         return true;
     }
 
@@ -633,6 +862,7 @@ bool Esp32Music::StopStreaming()
     if (display)
     {
         display->SetMusicInfo(""); // 清空歌名显示
+        display->ExitMusicScene();
         ESP_LOGI(TAG, "Cleared song name display");
     }
 
@@ -1192,8 +1422,13 @@ void Esp32Music::PlayAudioStream()
                      mp3_frame_info_.samprate, mp3_frame_info_.nChans);
 
             // 更新歌词显示
-            int buffer_latency_ms = 600; // 实测调整值
-            UpdateLyricDisplay(current_play_time_ms_ + buffer_latency_ms);
+            UpdateLyricDisplay(current_play_time_ms_ + lyric_offset_ms_.load());
+            if (current_play_time_ms_ / 500 != last_progress_update_ms_ / 500) {
+                last_progress_update_ms_ = current_play_time_ms_;
+                if (auto display = Board::GetInstance().GetDisplay()) {
+                    display->UpdateMusicProgress(current_play_time_ms_, track_duration_ms_.load());
+                }
+            }
 
             // 将PCM数据发送到Application的音频解码队列
             if (mp3_frame_info_.outputSamps > 0)
@@ -1303,7 +1538,11 @@ void Esp32Music::PlayAudioStream()
 
     // 停止播放标志
     is_playing_ = false;
+    ++playback_generation_;
     PostMusicBehavior(DisplayBehavior::kIdle, current_song_name_);
+    if (auto display = Board::GetInstance().GetDisplay()) {
+        display->ExitMusicScene();
+    }
 
     // Natural playback completion does not pass through StopStreaming().
     // Restore the speaker clock here so the wake-word reference path and
@@ -1431,7 +1670,7 @@ size_t Esp32Music::SkipId3Tag(uint8_t *data, size_t size)
 // 下载歌词
 bool Esp32Music::DownloadLyrics(const std::string &lyric_url)
 {
-    ESP_LOGI(TAG, "Downloading lyrics from: %s", lyric_url.c_str());
+    ESP_LOGI(TAG, "Downloading lyrics for the active track");
 
     // 检查URL是否为空
     if (lyric_url.empty())
@@ -1774,15 +2013,22 @@ void Esp32Music::UpdateLyricDisplay(int64_t current_time_ms)
         auto display = board.GetDisplay();
         if (display)
         {
+            std::string previous;
             std::string lyric_text;
+            std::string next;
 
             if (current_lyric_index_ >= 0 && current_lyric_index_ < (int)lyrics_.size())
             {
                 lyric_text = lyrics_[current_lyric_index_].second;
+                if (current_lyric_index_ > 0) {
+                    previous = lyrics_[current_lyric_index_ - 1].second;
+                }
+                if (current_lyric_index_ + 1 < (int)lyrics_.size()) {
+                    next = lyrics_[current_lyric_index_ + 1].second;
+                }
             }
 
-            // 显示歌词
-            display->SetChatMessage("lyric", lyric_text.c_str());
+            display->SetMusicLyricWindow(previous, lyric_text, next);
 
             ESP_LOGD(TAG, "Lyric update at %lldms: %s",
                      current_time_ms,

@@ -5,9 +5,11 @@
 #include <functional>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
+#include <esp_timer.h>
 #include "mmap_generate_emoji_normal.h"
 #include "gfx.h"
 #include <atomic>
+#include <cstdint>
 
 namespace anim {
 
@@ -33,6 +35,16 @@ public:
     void Unlock();
     
     void SetIcon(int asset_id);
+    void EnterMusicScene(const MusicTrackInfo& track);
+    void SetMusicArtwork(const uint16_t* background, int background_width,
+                         int background_height, const uint16_t* disc,
+                         int disc_width, int disc_height);
+    void SetMusicLyrics(const std::string& previous, const std::string& current,
+                        const std::string& next);
+    void SetMusicProgress(int position_ms, int duration_ms);
+    void SetMusicOverlayVisible(bool visible);
+    void ExitMusicScene();
+    bool IsMusicSceneActive() const { return music_scene_active_; }
     mmap_assets_handle_t GetAssetsHandle() const { return assets_handle_; }
 
     // Callback functions (public to be accessible from static helper functions)
@@ -42,6 +54,19 @@ public:
 private:
     gfx_handle_t engine_handle_;
     mmap_assets_handle_t assets_handle_;
+    uint8_t* music_background_data_ = nullptr;
+    uint8_t* music_disc_source_ = nullptr;
+    uint8_t* music_disc_frame_ = nullptr;
+    gfx_image_dsc_t music_background_dsc_{};
+    gfx_image_dsc_t music_disc_dsc_{};
+    esp_timer_handle_t music_rotation_timer_ = nullptr;
+    std::atomic<bool> music_scene_active_{false};
+    float music_disc_angle_ = 0.0f;
+
+    void ClearMusicArtworkLocked();
+    void CreateFallbackDiscLocked();
+    void RotateMusicDisc();
+    static void MusicRotationTimer(void* arg);
 };
 
 class EmoteDisplay : public Display {
@@ -53,6 +78,15 @@ public:
     virtual void SetEmotion(const char* emotion) override;
     virtual void SetStatus(const char* status) override;
     virtual void SetChatMessage(const char* role, const char* content) override;
+    virtual void EnterMusicScene(const MusicTrackInfo& track) override;
+    virtual void SetMusicArtwork(const uint16_t* background, int background_width,
+                                 int background_height, const uint16_t* disc,
+                                 int disc_width, int disc_height) override;
+    virtual void SetMusicLyricWindow(const std::string& previous,
+                                     const std::string& current,
+                                     const std::string& next) override;
+    virtual void UpdateMusicProgress(int position_ms, int duration_ms) override;
+    virtual void ExitMusicScene() override;
     virtual bool SupportsExpressionTest() const override { return true; }
     virtual bool StartExpressionTest() override;
     
