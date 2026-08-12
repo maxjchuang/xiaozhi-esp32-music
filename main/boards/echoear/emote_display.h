@@ -6,9 +6,12 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "mmap_generate_emoji_normal.h"
 #include "gfx.h"
 #include <atomic>
+#include <array>
 #include <cstdint>
 
 namespace anim {
@@ -57,16 +60,26 @@ private:
     uint8_t* music_background_data_ = nullptr;
     uint8_t* music_disc_source_ = nullptr;
     uint8_t* music_disc_frame_ = nullptr;
+    uint8_t* music_disc_back_frame_ = nullptr;
     gfx_image_dsc_t music_background_dsc_{};
     gfx_image_dsc_t music_disc_dsc_{};
     esp_timer_handle_t music_rotation_timer_ = nullptr;
+    TaskHandle_t music_rotation_task_ = nullptr;
+    std::atomic<bool> music_rotation_task_stopping_{false};
+    std::atomic<bool> music_rotation_paused_{true};
+    std::atomic<bool> music_rotation_busy_{false};
     std::atomic<bool> music_scene_active_{false};
     float music_disc_angle_ = 0.0f;
+    std::array<int16_t, 192> music_disc_left_{};
+    std::array<int16_t, 192> music_disc_right_{};
 
     void ClearMusicArtworkLocked();
     void CreateFallbackDiscLocked();
+    void InitializeMusicDiscBuffer(uint8_t* buffer);
+    void WaitForMusicRotationIdle();
     void RotateMusicDisc();
     static void MusicRotationTimer(void* arg);
+    static void MusicRotationTask(void* arg);
 };
 
 class EmoteDisplay : public Display {

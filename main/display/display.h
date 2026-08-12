@@ -8,6 +8,7 @@
 
 #include <string>
 #include <chrono>
+#include <vector>
 
 #include "display_behavior.h"
 

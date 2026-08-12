@@ -29,6 +29,19 @@ namespace {
 
 constexpr size_t kMaxManifestBytes = 64 * 1024;
 constexpr size_t kMaxArtworkBytes = 512 * 1024;
+constexpr size_t kLyricThreadStackSize = 8192;
+
+void ConfigureNextPthread(const char* name, size_t stack_size, int priority)
+{
+    esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
+    cfg.stack_size = stack_size;
+    cfg.prio = priority;
+    cfg.thread_name = name;
+    const esp_err_t error = esp_pthread_set_cfg(&cfg);
+    if (error != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to configure pthread %s: %s", name, esp_err_to_name(error));
+    }
+}
 
 struct HeapCapsDeleter {
     void operator()(uint8_t* value) const {
@@ -58,8 +71,14 @@ bool DownloadHttpResource(const std::string& url, size_t limit, const char* acce
         http->Close();
         return false;
     }
+    const size_t declared_length = http->GetBodyLength();
+    if (declared_length > limit) {
+        http->Close();
+        return false;
+    }
     output.clear();
-    output.reserve(std::min(limit, static_cast<size_t>(64 * 1024)));
+    output.reserve(declared_length > 0 ? declared_length
+                                      : std::min(limit, static_cast<size_t>(64 * 1024)));
     uint8_t chunk[2048];
     while (true) {
         const int count = http->Read(reinterpret_cast<char*>(chunk), sizeof(chunk));
@@ -111,7 +130,9 @@ bool DecodeJpegRgb565(const std::vector<uint8_t>& jpeg, int expected_width,
     }
     config.outbuf = pixels.get();
     config.outbuf_size = info.output_len;
-    config.flags.swap_color_bytes = 0;
+    // esp_emote_gfx renders RGB565 with byte swapping enabled for EchoEar's
+    // ST77916 panel, so decoded artwork must use the matching byte order.
+    config.flags.swap_color_bytes = 1;
     if (esp_jpeg_decode(&config, &info) != ESP_OK) {
         pixels.reset();
         return false;
@@ -577,6 +598,7 @@ bool Esp32Music::Download(const std::string &song_name, const std::string &artis
                         current_lyric_index_ = -1;
                         lyrics_.clear();
 
+                        ConfigureNextPthread("music_lyrics", kLyricThreadStackSize, 3);
                         lyric_thread_ = std::thread(&Esp32Music::LyricDisplayThread, this);
                     }
                     else
@@ -654,7 +676,8 @@ bool Esp32Music::Play(const MusicPlaybackRequest& request)
     auto display = Board::GetInstance().GetDisplay();
     if (display) {
         display->EnterMusicScene({current_song_name_, "", "", 0});
-        display->SetMusicLyricWindow("", "暂无歌词", "");
+        display->SetMusicLyricWindow(
+            "", request.metadata_url.empty() ? "暂无歌词" : "歌词加载中…", "");
     }
 
     ESP_LOGI(TAG, "Starting approved URL playback: %s", current_song_name_.c_str());
@@ -682,6 +705,11 @@ void Esp32Music::LoadMetadata(uint32_t generation, const std::string& metadata_u
     if (!DownloadHttpResource(metadata_url, kMaxManifestBytes, "application/json", body) ||
         generation != playback_generation_) {
         ESP_LOGW(TAG, "Music metadata unavailable; keeping fallback scene");
+        if (generation == playback_generation_) {
+            if (auto display = Board::GetInstance().GetDisplay()) {
+                display->SetMusicLyricWindow("", "暂无歌词", "");
+            }
+        }
         return;
     }
     body.push_back('\0');
@@ -690,6 +718,9 @@ void Esp32Music::LoadMetadata(uint32_t generation, const std::string& metadata_u
     if (!root || cJSON_GetObjectItem(root.get(), "schema_version") == nullptr ||
         cJSON_GetObjectItem(root.get(), "schema_version")->valueint != 1) {
         ESP_LOGW(TAG, "Unsupported music manifest");
+        if (auto display = Board::GetInstance().GetDisplay()) {
+            display->SetMusicLyricWindow("", "暂无歌词", "");
+        }
         return;
     }
 
@@ -728,41 +759,65 @@ void Esp32Music::LoadMetadata(uint32_t generation, const std::string& metadata_u
             lyric_offset_ms_ = offset->valueint;
         }
     }
+
+    // Lyrics are tiny and time-sensitive. Fetch and parse them before the two
+    // JPEG assets so the first timed line is ready even on a cold artwork
+    // cache. Metadata requests remain sequential because this board's HTTP
+    // backend becomes unreliable when they overlap.
+    bool lyrics_loaded = false;
     if (!lyric_url.empty() && generation == playback_generation_) {
         current_lyric_url_ = lyric_url;
-        is_lyric_running_ = true;
         current_lyric_index_ = -1;
-        lyric_thread_ = std::thread(&Esp32Music::LyricDisplayThread, this);
+        lyrics_loaded = DownloadLyrics(lyric_url);
+    }
+    if (generation == playback_generation_) {
+        if (auto display = Board::GetInstance().GetDisplay()) {
+            // Blank means that lyrics exist but their first timestamp has not
+            // arrived yet; only a missing/failed lyric resource says unavailable.
+            display->SetMusicLyricWindow("", lyrics_loaded ? "" : "暂无歌词", "");
+        }
     }
 
     auto* artwork = cJSON_GetObjectItem(root.get(), "artwork");
-    if (!cJSON_IsObject(artwork)) {
-        return;
+    if (cJSON_IsObject(artwork)) {
+        auto* background_item = cJSON_GetObjectItem(artwork, "background_url");
+        auto* disc_item = cJSON_GetObjectItem(artwork, "disc_url");
+        const bool valid_artwork =
+            cJSON_IsString(background_item) && background_item->valuestring &&
+            cJSON_IsString(disc_item) && disc_item->valuestring &&
+            IsManifestResource(metadata_url, background_item->valuestring, "background.jpg") &&
+            IsManifestResource(metadata_url, disc_item->valuestring, "disc.jpg");
+        if (valid_artwork) {
+            std::vector<uint8_t> background_jpeg;
+            std::vector<uint8_t> disc_jpeg;
+            HeapCapsBuffer background_pixels;
+            HeapCapsBuffer disc_pixels;
+            if (DownloadHttpResource(background_item->valuestring, kMaxArtworkBytes, "image/jpeg",
+                                     background_jpeg) &&
+                DownloadHttpResource(disc_item->valuestring, kMaxArtworkBytes, "image/jpeg",
+                                     disc_jpeg) &&
+                generation == playback_generation_ &&
+                DecodeJpegRgb565(background_jpeg, 360, 360, background_pixels) &&
+                DecodeJpegRgb565(disc_jpeg, 192, 192, disc_pixels)) {
+                if (auto display = Board::GetInstance().GetDisplay()) {
+                    display->SetMusicArtwork(
+                        reinterpret_cast<uint16_t*>(background_pixels.get()), 360, 360,
+                        reinterpret_cast<uint16_t*>(disc_pixels.get()), 192, 192);
+                }
+            } else {
+                ESP_LOGW(TAG, "Music artwork unavailable; keeping fallback theme");
+            }
+        }
     }
-    auto* background_item = cJSON_GetObjectItem(artwork, "background_url");
-    auto* disc_item = cJSON_GetObjectItem(artwork, "disc_url");
-    if (!cJSON_IsString(background_item) || !background_item->valuestring ||
-        !cJSON_IsString(disc_item) || !disc_item->valuestring ||
-        !IsManifestResource(metadata_url, background_item->valuestring, "background.jpg") ||
-        !IsManifestResource(metadata_url, disc_item->valuestring, "disc.jpg")) {
-        return;
-    }
-    std::vector<uint8_t> background_jpeg;
-    std::vector<uint8_t> disc_jpeg;
-    HeapCapsBuffer background_pixels;
-    HeapCapsBuffer disc_pixels;
-    if (!DownloadHttpResource(background_item->valuestring, kMaxArtworkBytes, "image/jpeg",
-                              background_jpeg) ||
-        !DownloadHttpResource(disc_item->valuestring, kMaxArtworkBytes, "image/jpeg", disc_jpeg) ||
-        generation != playback_generation_ ||
-        !DecodeJpegRgb565(background_jpeg, 360, 360, background_pixels) ||
-        !DecodeJpegRgb565(disc_jpeg, 192, 192, disc_pixels)) {
-        ESP_LOGW(TAG, "Music artwork unavailable; keeping fallback theme");
-        return;
-    }
-    if (auto display = Board::GetInstance().GetDisplay()) {
-        display->SetMusicArtwork(reinterpret_cast<uint16_t*>(background_pixels.get()), 360, 360,
-                                 reinterpret_cast<uint16_t*>(disc_pixels.get()), 192, 192);
+
+    if (lyrics_loaded && generation == playback_generation_) {
+        is_lyric_running_ = true;
+        // LoadMetadata itself runs on a configured pthread. esp_pthread
+        // settings are local to the creating task, so its child lyric thread
+        // otherwise falls back to the 3 KiB SDK default and overflows while
+        // parsing even a modest LRC document.
+        ConfigureNextPthread("music_lyrics", kLyricThreadStackSize, 3);
+        lyric_thread_ = std::thread(&Esp32Music::LyricDisplayThread, this);
     }
 }
 
@@ -834,8 +889,11 @@ bool Esp32Music::StopStreaming()
 
     PostMusicBehavior(DisplayBehavior::kIdle, current_song_name_);
     ++playback_generation_;
-    if (metadata_thread_.joinable() &&
-        metadata_thread_.get_id() != std::this_thread::get_id()) {
+    // StopStreaming is dispatched by the application's native FreeRTOS task,
+    // not an esp-pthread. Calling std::this_thread::get_id() from that task
+    // asserts inside ESP-IDF's pthread_self(). The metadata worker never calls
+    // StopStreaming, so joining it here cannot be a self-join.
+    if (metadata_thread_.joinable()) {
         metadata_thread_.join();
     }
 
@@ -1954,7 +2012,12 @@ void Esp32Music::LyricDisplayThread()
 {
     ESP_LOGI(TAG, "Lyric display thread started");
 
-    if (!DownloadLyrics(current_lyric_url_))
+    bool lyrics_ready = false;
+    {
+        std::lock_guard<std::mutex> lock(lyrics_mutex_);
+        lyrics_ready = !lyrics_.empty();
+    }
+    if (!lyrics_ready && !DownloadLyrics(current_lyric_url_))
     {
         ESP_LOGE(TAG, "Failed to download or parse lyrics");
         is_lyric_running_ = false;
