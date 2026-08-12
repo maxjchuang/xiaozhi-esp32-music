@@ -12,6 +12,7 @@
 namespace anim {
 
 enum class ExpressionUiMode {
+    kImmersive,
     kTips,
     kTime,
     kListening,

@@ -47,19 +47,26 @@ static gfx_font_t font_time = nullptr;
 static int current_icon_type = MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN;
 
 enum class UIDisplayMode : uint8_t {
+    SHOW_NONE = 0,      // Immersive eyes: no status overlay
     SHOW_ANIM_TOP = 1,  // Show obj_anim_mic
     SHOW_TIME = 2,      // Show obj_label_time
     SHOW_TIPS = 3       // Show obj_label_tips
 };
 
+static UIDisplayMode current_ui_display_mode = UIDisplayMode::SHOW_NONE;
+
 static void SetUIDisplayMode(UIDisplayMode mode)
 {
-    gfx_obj_set_visible(obj_anim_mic, false);
-    gfx_obj_set_visible(obj_label_time, false);
-    gfx_obj_set_visible(obj_label_tips, false);
+    current_ui_display_mode = mode;
+    if (obj_anim_mic) gfx_obj_set_visible(obj_anim_mic, false);
+    if (obj_label_time) gfx_obj_set_visible(obj_label_time, false);
+    if (obj_label_tips) gfx_obj_set_visible(obj_label_tips, false);
+    if (obj_img_icon) gfx_obj_set_visible(obj_img_icon, mode != UIDisplayMode::SHOW_NONE);
 
     // Show the selected control
     switch (mode) {
+    case UIDisplayMode::SHOW_NONE:
+        break;
     case UIDisplayMode::SHOW_ANIM_TOP:
         gfx_obj_set_visible(obj_anim_mic, true);
         break;
@@ -78,8 +85,9 @@ static void clock_tm_callback(void* user_data)
     if (engine && engine->IsMusicSceneActive()) {
         return;
     }
-    // Only display time when battery icon is shown
-    if (current_icon_type == MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN) {
+    // Do not let the periodic clock callback break immersive eye expressions.
+    if (current_ui_display_mode == UIDisplayMode::SHOW_TIME &&
+        current_icon_type == MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN) {
         time_t now;
         struct tm timeinfo;
         time(&now);
@@ -684,11 +692,11 @@ void EmoteEngine::ExitMusicScene()
     ClearMusicArtworkLocked();
     gfx_emote_set_bg_color(engine_handle_, GFX_COLOR_HEX(0x000000));
     gfx_obj_set_visible(obj_anim_eye, true);
-    gfx_obj_set_visible(obj_img_icon, true);
+    gfx_obj_set_visible(obj_img_icon, false);
     // Restore exactly one normal overlay before ExpressionDirector applies
     // the current state. This prevents the periodic clock callback and stale
     // music labels from becoming visible together during the hand-off.
-    SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
+    SetUIDisplayMode(UIDisplayMode::SHOW_NONE);
     gfx_anim_start(obj_anim_eye);
     obj_anim_eye->is_dirty = true;  // animation dirtiness forces a full refresh
     Unlock();
@@ -1066,8 +1074,7 @@ void EmoteDisplay::SetStatus(const char* status)
         engine_->setEyes(MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20);
         engine_->SetIcon(MMAP_EMOJI_NORMAL_ICON_MIC_BIN);
     } else if (!director_ && std::strcmp(status, "待命") == 0) {
-        SetUIDisplayMode(UIDisplayMode::SHOW_TIME);
-        engine_->SetIcon(MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN);
+        SetUIDisplayMode(UIDisplayMode::SHOW_NONE);
     } else if (!director_ && std::strcmp(status, "说话中...") == 0) {
         SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
         engine_->SetIcon(MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN);
@@ -1208,13 +1215,18 @@ void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
 #endif
 
     engine_->setEyes(render_model.animation_asset_id, render_model.repeat, render_model.fps);
-    engine_->SetIcon(render_model.icon_asset_id);
+    if (render_model.ui_mode != ExpressionUiMode::kImmersive) {
+        engine_->SetIcon(render_model.icon_asset_id);
+    }
 
     engine_->Lock();
     if (!render_model.text.empty()) {
         gfx_label_set_text(obj_label_tips, render_model.text.c_str());
     }
     switch (render_model.ui_mode) {
+    case ExpressionUiMode::kImmersive:
+        SetUIDisplayMode(UIDisplayMode::SHOW_NONE);
+        break;
     case ExpressionUiMode::kTips:
         SetUIDisplayMode(UIDisplayMode::SHOW_TIPS);
         break;

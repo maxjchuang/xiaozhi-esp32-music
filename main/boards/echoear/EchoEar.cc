@@ -2,6 +2,7 @@
 #include "codecs/box_audio_codec.h"
 #include "display/lcd_display.h"
 #include "application.h"
+#include "assets/lang_config.h"
 #include "button.h"
 #include "config.h"
 #include "backlight.h"
@@ -9,6 +10,10 @@
 
 #include <wifi_station.h>
 #include <esp_log.h>
+#include <esp_sleep.h>
+
+#include <algorithm>
+#include <atomic>
 
 #include <driver/i2c_master.h>
 #include <driver/i2c.h>
@@ -229,36 +234,168 @@ class Charge : public I2cDevice {
 public:
     Charge(i2c_master_bus_handle_t i2c_bus, uint8_t addr) : I2cDevice(i2c_bus, addr)
     {
-        read_buffer_ = new uint8_t[8];
     }
-    ~Charge()
+
+    void SampleAndApplyPolicy()
     {
-        delete[] read_buffer_;
-    }
-    void Printcharge()
-    {
-        ReadRegs(0x08, read_buffer_, 2);
-        ReadRegs(0x0c, read_buffer_ + 2, 2);
+        uint8_t buffer[8] = {};
+        ReadRegs(0x08, buffer, 6);
+        uint8_t soc_buffer[2] = {};
+        ReadRegs(0x2c, soc_buffer, sizeof(soc_buffer));
         ESP_ERROR_CHECK(temperature_sensor_get_celsius(temp_sensor, &tsens_value));
 
-        int16_t voltage = static_cast<uint16_t>(read_buffer_[1] << 8 | read_buffer_[0]);
-        int16_t current = static_cast<int16_t>(read_buffer_[3] << 8 | read_buffer_[2]);
-        
-        // Use the variables to avoid warnings (can be removed if actual implementation uses them)
-        (void)voltage;
-        (void)current;
+        const uint16_t voltage_mv = static_cast<uint16_t>(buffer[1] << 8 | buffer[0]);
+        const uint16_t battery_status = static_cast<uint16_t>(buffer[3] << 8 | buffer[2]);
+        const int16_t current_ma = static_cast<int16_t>(buffer[5] << 8 | buffer[4]);
+        const uint16_t soc = static_cast<uint16_t>(soc_buffer[1] << 8 | soc_buffer[0]);
+
+        if (voltage_mv < 2500 || voltage_mv > 5000 || soc > 100) {
+            valid_.store(false);
+            ESP_LOGW(TAG, "Battery gauge returned invalid data: soc=%u voltage=%umV status=0x%04x",
+                     soc, voltage_mv, battery_status);
+            return;
+        }
+
+        // BQ27220 BatteryStatus bit 0 (DSG) is set while the cell is supplying
+        // the system.  A clear DSG bit means the device is externally powered
+        // (charging or relaxed), which suppresses every low-battery action.
+        const bool discharging = (battery_status & 0x0001) != 0;
+        level_.store(static_cast<int>(soc));
+        discharging_.store(discharging);
+        charging_.store(!discharging);
+        valid_.store(true);
+
+        ESP_LOGI(TAG, "Battery: soc=%u%% voltage=%umV current=%dmA status=0x%04x external_power=%s",
+                 soc, voltage_mv, current_ma, battery_status, discharging ? "no" : "yes");
+
+        if (!discharging) {
+            ResetDischargeCycle();
+            return;
+        }
+
+        UpdateCounter(low_20_samples_, soc <= 20);
+        UpdateCounter(low_10_samples_, soc <= 10);
+        UpdateCounter(shutdown_samples_, soc < 5);
+
+        if (shutdown_samples_ >= kStableSampleCount && !shutdown_requested_) {
+            shutdown_requested_ = true;
+            ESP_LOGW(TAG, "Battery below 5%% for %d samples; entering low-power shutdown",
+                     kStableSampleCount);
+            Application::GetInstance().Schedule([]() {
+                Board::GetInstance().GetDisplay()->SetBehavior({
+                    DisplayBehavior::kFatalError,
+                    DisplayBehaviorSource::kSystem,
+                    "电量过低，即将关机",
+                    2500,
+                });
+            });
+            return;
+        }
+
+        if (low_10_samples_ >= kStableSampleCount && !notified_10_) {
+            notified_10_ = true;
+            notified_20_ = true;
+            PostLowBatteryReminder(10, "电量剩余 10%，请尽快充电");
+        } else if (low_20_samples_ >= kStableSampleCount && !notified_20_) {
+            notified_20_ = true;
+            PostLowBatteryReminder(20, "电量剩余 20%，请充电");
+        }
     }
+
     static void TaskFunction(void *pvParameters)
     {
         Charge* charge = static_cast<Charge*>(pvParameters);
         while (true) {
-            charge->Printcharge();
-            vTaskDelay(pdMS_TO_TICKS(300));
+            charge->SampleAndApplyPolicy();
+            if (charge->shutdown_requested_) {
+                vTaskDelay(pdMS_TO_TICKS(3000));
+                // Re-sample so plugging the cable in during the warning cancels
+                // shutdown instead of putting a powered device to sleep.
+                charge->SampleAndApplyPolicy();
+                if (charge->valid_.load() && charge->discharging_.load() &&
+                    charge->level_.load() < 5) {
+                    charge->EnterLowPowerShutdown();
+                }
+                charge->shutdown_requested_ = false;
+            }
+            vTaskDelay(pdMS_TO_TICKS(kSampleIntervalMs));
         }
     }
 
+    bool GetBatteryLevel(int& level, bool& charging, bool& discharging) const
+    {
+        if (!valid_.load()) {
+            return false;
+        }
+        level = level_.load();
+        charging = charging_.load();
+        discharging = discharging_.load();
+        return true;
+    }
+
 private:
-    uint8_t* read_buffer_ = nullptr;
+    static constexpr int kSampleIntervalMs = 5000;
+    static constexpr int kStableSampleCount = 3;
+
+    static void UpdateCounter(int& counter, bool condition)
+    {
+        counter = condition ? std::min(counter + 1, kStableSampleCount) : 0;
+    }
+
+    void ResetDischargeCycle()
+    {
+        if (notified_20_ || notified_10_ || shutdown_requested_) {
+            ESP_LOGI(TAG, "External power detected; reset low-battery notification cycle");
+        }
+        notified_20_ = false;
+        notified_10_ = false;
+        shutdown_requested_ = false;
+        low_20_samples_ = 0;
+        low_10_samples_ = 0;
+        shutdown_samples_ = 0;
+    }
+
+    static void PostLowBatteryReminder(int threshold, const char* detail)
+    {
+        ESP_LOGW(TAG, "Low-battery reminder at %d%%", threshold);
+        const std::string message(detail);
+        Application::GetInstance().Schedule([message]() {
+            auto& app = Application::GetInstance();
+            Board::GetInstance().GetDisplay()->SetBehavior({
+                DisplayBehavior::kRecoverableError,
+                DisplayBehaviorSource::kSystem,
+                message,
+                4500,
+            });
+            app.PlaySound(Lang::Sounds::P3_LOW_BATTERY);
+        });
+    }
+
+    [[noreturn]] static void EnterLowPowerShutdown()
+    {
+        ESP_LOGW(TAG, "Low battery: disabling peripherals and entering deep sleep");
+        if (auto* backlight = Board::GetInstance().GetBacklight()) {
+            backlight->SetBrightness(0);
+        }
+        // POWER_CTRL only gates LCD/SD power on EchoEar. The SAM8108 power
+        // latch is controlled by the physical button, so deep sleep is the
+        // closest firmware-controlled equivalent to a full shutdown.
+        gpio_set_level(POWER_CTRL, 1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_deep_sleep_start();
+        __builtin_unreachable();
+    }
+
+    std::atomic<bool> valid_{false};
+    std::atomic<int> level_{-1};
+    std::atomic<bool> charging_{false};
+    std::atomic<bool> discharging_{false};
+    int low_20_samples_ = 0;
+    int low_10_samples_ = 0;
+    int shutdown_samples_ = 0;
+    bool notified_20_ = false;
+    bool notified_10_ = false;
+    bool shutdown_requested_ = false;
 };
 
 class Cst816s : public I2cDevice {
@@ -628,6 +765,11 @@ public:
     virtual Display* GetDisplay() override
     {
         return display_;
+    }
+
+    virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override
+    {
+        return charge_ != nullptr && charge_->GetBatteryLevel(level, charging, discharging);
     }
 
     Cst816s* GetTouchpad()
