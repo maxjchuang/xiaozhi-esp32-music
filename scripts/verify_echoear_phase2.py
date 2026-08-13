@@ -16,8 +16,10 @@ ARTWORK_RE = re.compile(r"MUSIC_METRIC artwork .*?available=(\d).*?elapsed_ms=(\
 AUDIO_RE = re.compile(
     r"MUSIC_METRIC audio_complete .*?underruns=(\d+).*?underrun_total_ms=(\d+)")
 RESOURCE_RE = re.compile(
-    r"MUSIC_METRIC scene exit .*?internal_delta=(-?\d+).*?psram_delta=(-?\d+)")
+    r"MUSIC_METRIC resources released .*?elapsed_ms=(\d+).*?internal_delta=(-?\d+).*?psram_delta=(-?\d+)")
 OVERLAY_RE = re.compile(r"MUSIC_METRIC overlay visible=(\d)")
+BUFFER_RELEASE_RE = re.compile(r"MUSIC_METRIC audio_buffer_release bytes=(\d+) chunks=(\d+)")
+WORKERS_REAPED_RE = re.compile(r"MUSIC_METRIC workers_reaped generation=(\d+)")
 
 
 def clean_log(raw: str) -> str:
@@ -90,14 +92,30 @@ def main() -> int:
            f"sessions={len(audio)}, underruns={underruns}, wait={underrun_ms}ms",
            failures, "audio_underrun")
 
-    resources = [(int(internal), int(psram)) for internal, psram in RESOURCE_RE.findall(log)]
-    resource_ok = bool(resources) and all(internal >= -8192 and psram >= -8192
-                                          for internal, psram in resources)
-    worst_internal = min((item[0] for item in resources), default=0)
-    worst_psram = min((item[1] for item in resources), default=0)
-    report(resource_ok, "退出后内存下降均不超过 8 KiB",
-           f"sessions={len(resources)}, internal={worst_internal}, psram={worst_psram}",
+    resources = [(int(elapsed), int(internal), int(psram))
+                 for elapsed, internal, psram in RESOURCE_RE.findall(log)]
+    resource_ok = bool(resources) and all(elapsed <= 5500 and internal >= -8192 and psram >= -8192
+                                          for elapsed, internal, psram in resources)
+    worst_elapsed = max((item[0] for item in resources), default=0)
+    worst_internal = min((item[1] for item in resources), default=0)
+    worst_psram = min((item[2] for item in resources), default=0)
+    report(resource_ok, "退出 5 秒后内存下降均不超过 8 KiB",
+           f"sessions={len(resources)}, elapsed={worst_elapsed}ms, internal={worst_internal}, psram={worst_psram}",
            failures, "resource_release")
+
+    buffer_releases = [(int(size), int(chunks))
+                       for size, chunks in BUFFER_RELEASE_RE.findall(log)]
+    if buffer_releases:
+        released_bytes = sum(item[0] for item in buffer_releases)
+        released_chunks = sum(item[1] for item in buffer_releases)
+        report(released_bytes > 0 and released_chunks > 0,
+               "主动停止释放未播放音频缓冲",
+               f"events={len(buffer_releases)}, bytes={released_bytes}, chunks={released_chunks}",
+               failures, "audio_buffer_release")
+        report(bool(WORKERS_REAPED_RE.search(log)),
+               "主动停止回收音乐工作线程",
+               f"events={len(WORKERS_REAPED_RE.findall(log))}",
+               failures, "music_workers_reaped")
 
     if args.structured or args.full:
         metadata = [int(value) for value in METADATA_RE.findall(log)]

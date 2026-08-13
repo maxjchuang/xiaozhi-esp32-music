@@ -39,9 +39,11 @@ public:
     
     void SetIcon(int asset_id);
     void EnterMusicScene(const MusicTrackInfo& track);
+    void UpdateMusicTrackInfo(const MusicTrackInfo& track);
     void SetMusicArtwork(const uint16_t* background, int background_width,
                          int background_height, const uint16_t* disc,
                          int disc_width, int disc_height);
+    void CommitMusicFallback();
     void SetMusicLyrics(const std::string& previous, const std::string& current,
                         const std::string& next);
     void SetMusicProgress(int position_ms, int duration_ms);
@@ -65,6 +67,8 @@ private:
     gfx_image_dsc_t music_background_dsc_{};
     gfx_image_dsc_t music_disc_dsc_{};
     esp_timer_handle_t music_rotation_timer_ = nullptr;
+    esp_timer_handle_t music_fallback_timer_ = nullptr;
+    esp_timer_handle_t music_release_timer_ = nullptr;
     TaskHandle_t music_rotation_task_ = nullptr;
     std::atomic<bool> music_rotation_task_stopping_{false};
     std::atomic<bool> music_rotation_paused_{true};
@@ -75,6 +79,7 @@ private:
     std::atomic<bool> music_overlay_requested_{false};
     std::atomic<bool> music_overlay_visible_{false};
     std::atomic<bool> music_artwork_ready_{false};
+    std::atomic<int64_t> music_scene_started_us_{0};
     size_t music_scene_internal_free_before_ = 0;
     size_t music_scene_spiram_free_before_ = 0;
     float music_disc_angle_ = 0.0f;
@@ -83,10 +88,13 @@ private:
 
     void ClearMusicArtworkLocked();
     void CreateFallbackDiscLocked();
+    void CommitMusicSceneLocked();
     void InitializeMusicDiscBuffer(uint8_t* buffer);
     void WaitForMusicRotationIdle();
     void RotateMusicDisc();
     static void MusicRotationTimer(void* arg);
+    static void MusicFallbackTimer(void* arg);
+    static void MusicReleaseTimer(void* arg);
     static void MusicRotationTask(void* arg);
 };
 
@@ -100,9 +108,11 @@ public:
     virtual void SetStatus(const char* status) override;
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void EnterMusicScene(const MusicTrackInfo& track) override;
+    virtual void UpdateMusicTrackInfo(const MusicTrackInfo& track) override;
     virtual void SetMusicArtwork(const uint16_t* background, int background_width,
                                  int background_height, const uint16_t* disc,
                                  int disc_width, int disc_height) override;
+    virtual void CommitMusicFallback() override;
     virtual void SetMusicLyricWindow(const std::string& previous,
                                      const std::string& current,
                                      const std::string& next) override;

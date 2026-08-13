@@ -34,7 +34,12 @@ python3 scripts/verify_echoear_phase2.py \
 python3 scripts/verify_echoear_phase2.py --full echoear-music-phase2-soak.log
 ```
 
-固件会输出统一的 `MUSIC_METRIC` 日志，包含元数据、歌词、封面耗时、音频欠载、音乐层覆盖切换和退出后的内存差值。歌词与声音的 ±700 ms 偏差和旋转观感仍需人工确认。
+固件会输出统一的 `MUSIC_METRIC` 日志，包含元数据、歌词、封面/兜底耗时、断流续传、音频欠载、音乐层覆盖切换，以及退出 5 秒后的内存差值。歌词与声音的 ±700 ms 偏差和旋转观感仍需人工确认。
+
+主动停止时，如果下载缓冲中仍有未播放数据，还会输出
+`MUSIC_METRIC audio_buffer_release`；其 `bytes` 和 `chunks` 应大于零，随后
+应出现 `MUSIC_METRIC workers_reaped`，且 `resources released` 的内部 SRAM
+与 PSRAM 差值均应不低于 -8 KiB。
 
 ## 合入后稳定性门槛
 
