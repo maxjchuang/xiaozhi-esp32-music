@@ -70,7 +70,11 @@ private:
     std::atomic<bool> music_rotation_paused_{true};
     std::atomic<bool> music_rotation_busy_{false};
     std::atomic<bool> music_scene_active_{false};
+    // requested is the director's desired foreground ownership; visible is
+    // the state actually committed to the panel after artwork is ready.
+    std::atomic<bool> music_overlay_requested_{false};
     std::atomic<bool> music_overlay_visible_{false};
+    std::atomic<bool> music_artwork_ready_{false};
     size_t music_scene_internal_free_before_ = 0;
     size_t music_scene_spiram_free_before_ = 0;
     float music_disc_angle_ = 0.0f;

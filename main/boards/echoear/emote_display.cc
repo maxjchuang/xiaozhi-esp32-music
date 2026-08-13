@@ -508,7 +508,7 @@ void EmoteEngine::EnterMusicScene(const MusicTrackInfo& track)
         return;
     }
     const bool first_entry = !music_scene_active_.load();
-    const bool show_music = first_entry || music_overlay_visible_.load();
+    const bool request_music = first_entry || music_overlay_requested_.load();
     if (first_entry) {
         music_scene_internal_free_before_ = heap_caps_get_free_size(
             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -525,41 +525,23 @@ void EmoteEngine::EnterMusicScene(const MusicTrackInfo& track)
     WaitForMusicRotationIdle();
     Lock();
     music_scene_active_ = true;
-    music_overlay_visible_ = show_music;
+    music_overlay_requested_ = request_music;
+    music_overlay_visible_ = false;
+    music_artwork_ready_ = false;
     music_disc_angle_ = 0;
     ClearMusicArtworkLocked();
-    if (show_music) {
-        gfx_emote_set_bg_color(engine_handle_, GFX_COLOR_HEX(0x08101E));
-        gfx_obj_set_visible(obj_anim_eye, false);
-        gfx_obj_set_visible(obj_anim_mic, false);
-        gfx_obj_set_visible(obj_img_icon, false);
-        gfx_obj_set_visible(obj_label_tips, false);
-        gfx_obj_set_visible(obj_label_time, false);
-    }
     gfx_label_set_text(obj_label_music_title, track.title.c_str());
     gfx_label_set_text(obj_label_music_artist, track.artist.empty() ? "正在播放" : track.artist.c_str());
     gfx_label_set_text(obj_label_music_previous, "");
     gfx_label_set_text(obj_label_music_current, "歌词加载中…");
     gfx_label_set_text(obj_label_music_next, "");
     gfx_label_set_text(obj_label_music_progress, "--:--");
-    SetMusicObjectsVisible(show_music);
-    gfx_obj_set_visible(obj_img_music_background, false);
-    gfx_obj_set_visible(obj_img_music_disc, false);
-    // A full-screen RGB565A8 background is considerably more expensive than
-    // the normal eye animation. Stop decoding the hidden eye and lower the
-    // shared render cadence while the music scene is active, leaving enough
-    // CPU time for audio, WakeNet and the idle task/watchdog.
-    if (show_music) {
-        gfx_anim_stop(obj_anim_eye);
-        gfx_anim_set_segment(obj_anim_eye, 0, 0xFFFF, 5, false);
-    }
+    // Preparing a track must not expose a half-built scene. Keep every music
+    // object hidden and leave the current eye frame untouched until both the
+    // full-screen background and disc have been installed.
+    SetMusicObjectsVisible(false);
     Unlock();
-    music_rotation_paused_ = !show_music;
-    if (show_music && music_rotation_timer_ && music_rotation_task_) {
-        // Notifications coalesce, so a slow frame is dropped instead of
-        // creating a render backlog that could starve audio playback.
-        esp_timer_start_periodic(music_rotation_timer_, 100 * 1000);
-    }
+    music_rotation_paused_ = true;
 }
 
 void EmoteEngine::SetMusicArtwork(const uint16_t* background, int background_width,
@@ -630,9 +612,24 @@ void EmoteEngine::SetMusicArtwork(const uint16_t* background, int background_wid
     music_disc_dsc_.data = music_disc_frame_;
     gfx_img_set_src(obj_img_music_background, &music_background_dsc_);
     gfx_img_set_src(obj_img_music_disc, &music_disc_dsc_);
-    const bool show_music = music_overlay_visible_.load();
-    gfx_obj_set_visible(obj_img_music_background, show_music);
-    gfx_obj_set_visible(obj_img_music_disc, show_music);
+    music_artwork_ready_ = true;
+    const bool show_music = music_overlay_requested_.load();
+    music_overlay_visible_ = show_music;
+    if (show_music) {
+        // Commit the complete scene as one graphics-state transition. The
+        // background is already bound before the eye is hidden, so no frame
+        // can contain labels/disc over the previous eye animation.
+        gfx_emote_set_bg_color(engine_handle_, GFX_COLOR_HEX(0x08101E));
+        SetMusicObjectsVisible(true);
+        gfx_obj_set_visible(obj_anim_eye, false);
+        gfx_obj_set_visible(obj_anim_mic, false);
+        gfx_obj_set_visible(obj_img_icon, false);
+        gfx_obj_set_visible(obj_label_tips, false);
+        gfx_obj_set_visible(obj_label_time, false);
+        gfx_anim_stop(obj_anim_eye);
+        gfx_anim_set_segment(obj_anim_eye, 0, 0xFFFF, 5, false);
+        ESP_LOGI(TAG, "MUSIC_METRIC artwork commit overlay=1");
+    }
     Unlock();
     music_rotation_paused_ = !show_music;
     if (show_music && music_rotation_timer_ && music_rotation_task_) {
@@ -679,23 +676,32 @@ void EmoteEngine::SetMusicOverlayVisible(bool visible)
     if (!music_scene_active_) {
         return;
     }
-    const bool visibility_changed = music_overlay_visible_.exchange(visible) != visible;
+    music_overlay_requested_ = visible;
+    const bool actual_visible = visible && music_artwork_ready_.load();
+    const bool visibility_changed =
+        music_overlay_visible_.exchange(actual_visible) != actual_visible;
     if (visibility_changed) {
-        ESP_LOGI(TAG, "MUSIC_METRIC overlay visible=%d", visible);
+        ESP_LOGI(TAG, "MUSIC_METRIC overlay visible=%d", actual_visible);
     }
-    music_rotation_paused_ = !visible;
-    if (!visible && visibility_changed && music_rotation_timer_) {
+    music_rotation_paused_ = !actual_visible;
+    if (!actual_visible && visibility_changed && music_rotation_timer_) {
         esp_timer_stop(music_rotation_timer_);
     }
+    // Before artwork is ready, retain the current expression exactly as-is.
+    // ApplyRenderModel() will keep normal eyes current while this function
+    // only records the requested music ownership.
+    if (visible && !actual_visible) {
+        return;
+    }
     Lock();
-    gfx_emote_set_bg_color(engine_handle_, GFX_COLOR_HEX(visible ? 0x08101E : 0x000000));
-    SetMusicObjectsVisible(visible);
-    gfx_obj_set_visible(obj_anim_eye, !visible);
+    gfx_emote_set_bg_color(engine_handle_, GFX_COLOR_HEX(actual_visible ? 0x08101E : 0x000000));
+    SetMusicObjectsVisible(actual_visible);
+    gfx_obj_set_visible(obj_anim_eye, !actual_visible);
     gfx_obj_set_visible(obj_anim_mic, false);
-    gfx_obj_set_visible(obj_img_icon, !visible);
-    gfx_obj_set_visible(obj_label_tips, !visible);
+    gfx_obj_set_visible(obj_img_icon, !actual_visible);
+    gfx_obj_set_visible(obj_label_tips, !actual_visible);
     gfx_obj_set_visible(obj_label_time, false);
-    if (visible) {
+    if (actual_visible) {
         // ExpressionDirector may have selected a 20 FPS media expression just
         // before restoring the music layer. Keep the hidden animation stopped
         // and return the shared graphics cadence to the safe music rate.
@@ -708,7 +714,7 @@ void EmoteEngine::SetMusicOverlayVisible(bool visible)
         obj_anim_eye->is_dirty = true;
     }
     Unlock();
-    if (visible && visibility_changed && music_rotation_timer_ && music_rotation_task_) {
+    if (actual_visible && visibility_changed && music_rotation_timer_ && music_rotation_task_) {
         const esp_err_t result = esp_timer_start_periodic(music_rotation_timer_, 100 * 1000);
         if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) {
             ESP_LOGW(TAG, "Failed to resume music rotation timer: %s",
@@ -725,7 +731,9 @@ void EmoteEngine::ExitMusicScene()
     }
     Lock();
     music_scene_active_ = false;
+    music_overlay_requested_ = false;
     music_overlay_visible_ = false;
+    music_artwork_ready_ = false;
     Unlock();
     WaitForMusicRotationIdle();
     Lock();
@@ -1272,7 +1280,7 @@ void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
         const bool show_music = !music_scene_behavior_ready_ ||
                                 render_model.music_scene_visible;
         engine_->SetMusicOverlayVisible(show_music);
-        if (show_music) {
+        if (engine_->IsMusicOverlayVisible()) {
             return;
         }
     }
