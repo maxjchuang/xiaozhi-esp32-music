@@ -352,8 +352,29 @@ EmoteEngine::EmoteEngine(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t
     if (esp_timer_create(&rotation_timer_args, &music_rotation_timer_) != ESP_OK) {
         music_rotation_timer_ = nullptr;
     }
-    BaseType_t rotation_task_result = xTaskCreate(
-        MusicRotationTask, "music_disc_rotate", 6144, this, 1, &music_rotation_task_);
+    const esp_timer_create_args_t fallback_timer_args = {
+        .callback = MusicFallbackTimer,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "music_fallback",
+        .skip_unhandled_events = true,
+    };
+    if (esp_timer_create(&fallback_timer_args, &music_fallback_timer_) != ESP_OK) {
+        music_fallback_timer_ = nullptr;
+    }
+    const esp_timer_create_args_t release_timer_args = {
+        .callback = MusicReleaseTimer,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "music_release",
+        .skip_unhandled_events = true,
+    };
+    if (esp_timer_create(&release_timer_args, &music_release_timer_) != ESP_OK) {
+        music_release_timer_ = nullptr;
+    }
+    BaseType_t rotation_task_result = xTaskCreateWithCaps(
+        MusicRotationTask, "music_disc_rotate", 6144, this, 1, &music_rotation_task_,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (rotation_task_result != pdPASS) {
         music_rotation_task_ = nullptr;
         ESP_LOGE(TAG, "Failed to create music disc decode task");
@@ -362,6 +383,16 @@ EmoteEngine::EmoteEngine(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t
 
 EmoteEngine::~EmoteEngine()
 {
+    if (music_fallback_timer_) {
+        esp_timer_stop(music_fallback_timer_);
+        esp_timer_delete(music_fallback_timer_);
+        music_fallback_timer_ = nullptr;
+    }
+    if (music_release_timer_) {
+        esp_timer_stop(music_release_timer_);
+        esp_timer_delete(music_release_timer_);
+        music_release_timer_ = nullptr;
+    }
     if (music_rotation_timer_) {
         esp_timer_stop(music_rotation_timer_);
         esp_timer_delete(music_rotation_timer_);
@@ -374,7 +405,7 @@ EmoteEngine::~EmoteEngine()
             vTaskDelay(pdMS_TO_TICKS(2));
         }
         if (music_rotation_task_) {
-            vTaskDelete(music_rotation_task_);
+            vTaskDeleteWithCaps(music_rotation_task_);
             music_rotation_task_ = nullptr;
         }
     }
@@ -502,10 +533,45 @@ void EmoteEngine::CreateFallbackDiscLocked()
     gfx_img_set_src(obj_img_music_disc, &music_disc_dsc_);
 }
 
+void EmoteEngine::CommitMusicSceneLocked()
+{
+    const bool show_music = music_overlay_requested_.load();
+    music_overlay_visible_ = show_music;
+    if (!show_music) {
+        return;
+    }
+    gfx_emote_set_bg_color(engine_handle_, GFX_COLOR_HEX(0x08101E));
+    SetMusicObjectsVisible(true);
+    // Fallback deliberately has no full-screen bitmap; the solid background,
+    // disc and labels are nevertheless committed as one complete theme.
+    gfx_obj_set_visible(obj_img_music_background, music_background_data_ != nullptr);
+    gfx_obj_set_visible(obj_anim_eye, false);
+    gfx_obj_set_visible(obj_anim_mic, false);
+    gfx_obj_set_visible(obj_img_icon, false);
+    gfx_obj_set_visible(obj_label_tips, false);
+    gfx_obj_set_visible(obj_label_time, false);
+    gfx_anim_stop(obj_anim_eye);
+    gfx_anim_set_segment(obj_anim_eye, 0, 0xFFFF, 5, false);
+}
+
 void EmoteEngine::EnterMusicScene(const MusicTrackInfo& track)
 {
     if (!engine_handle_) {
         return;
+    }
+    const bool first_entry = !music_scene_active_.load();
+    const bool request_music = first_entry || music_overlay_requested_.load();
+    if (first_entry) {
+        if (music_release_timer_) {
+            esp_timer_stop(music_release_timer_);
+        }
+        music_scene_internal_free_before_ = heap_caps_get_free_size(
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        music_scene_spiram_free_before_ = heap_caps_get_free_size(
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        ESP_LOGI(TAG, "MUSIC_METRIC scene enter internal_free=%u psram_free=%u",
+                 static_cast<unsigned>(music_scene_internal_free_before_),
+                 static_cast<unsigned>(music_scene_spiram_free_before_));
     }
     music_rotation_paused_ = true;
     if (music_rotation_timer_) {
@@ -514,36 +580,40 @@ void EmoteEngine::EnterMusicScene(const MusicTrackInfo& track)
     WaitForMusicRotationIdle();
     Lock();
     music_scene_active_ = true;
+    music_overlay_requested_ = request_music;
+    music_overlay_visible_ = false;
+    music_artwork_ready_ = false;
+    music_scene_started_us_ = esp_timer_get_time();
     music_disc_angle_ = 0;
     ClearMusicArtworkLocked();
-    gfx_emote_set_bg_color(engine_handle_, GFX_COLOR_HEX(0x08101E));
-    gfx_obj_set_visible(obj_anim_eye, false);
-    gfx_obj_set_visible(obj_anim_mic, false);
-    gfx_obj_set_visible(obj_img_icon, false);
-    gfx_obj_set_visible(obj_label_tips, false);
-    gfx_obj_set_visible(obj_label_time, false);
     gfx_label_set_text(obj_label_music_title, track.title.c_str());
     gfx_label_set_text(obj_label_music_artist, track.artist.empty() ? "正在播放" : track.artist.c_str());
     gfx_label_set_text(obj_label_music_previous, "");
     gfx_label_set_text(obj_label_music_current, "歌词加载中…");
     gfx_label_set_text(obj_label_music_next, "");
     gfx_label_set_text(obj_label_music_progress, "--:--");
-    SetMusicObjectsVisible(true);
-    gfx_obj_set_visible(obj_img_music_background, false);
-    gfx_obj_set_visible(obj_img_music_disc, false);
-    // A full-screen RGB565A8 background is considerably more expensive than
-    // the normal eye animation. Stop decoding the hidden eye and lower the
-    // shared render cadence while the music scene is active, leaving enough
-    // CPU time for audio, WakeNet and the idle task/watchdog.
-    gfx_anim_stop(obj_anim_eye);
-    gfx_anim_set_segment(obj_anim_eye, 0, 0xFFFF, 5, false);
+    // Preparing a track must not expose a half-built scene. Keep every music
+    // object hidden and leave the current eye frame untouched until both the
+    // full-screen background and disc have been installed.
+    SetMusicObjectsVisible(false);
     Unlock();
-    music_rotation_paused_ = false;
-    if (music_rotation_timer_ && music_rotation_task_) {
-        // Notifications coalesce, so a slow frame is dropped instead of
-        // creating a render backlog that could starve audio playback.
-        esp_timer_start_periodic(music_rotation_timer_, 100 * 1000);
+    music_rotation_paused_ = true;
+    if (music_fallback_timer_) {
+        esp_timer_stop(music_fallback_timer_);
+        esp_timer_start_once(music_fallback_timer_, 3 * 1000 * 1000);
     }
+}
+
+void EmoteEngine::UpdateMusicTrackInfo(const MusicTrackInfo& track)
+{
+    if (!music_scene_active_) {
+        return;
+    }
+    Lock();
+    gfx_label_set_text(obj_label_music_title, track.title.c_str());
+    gfx_label_set_text(obj_label_music_artist,
+                       track.artist.empty() ? "正在播放" : track.artist.c_str());
+    Unlock();
 }
 
 void EmoteEngine::SetMusicArtwork(const uint16_t* background, int background_width,
@@ -614,13 +684,54 @@ void EmoteEngine::SetMusicArtwork(const uint16_t* background, int background_wid
     music_disc_dsc_.data = music_disc_frame_;
     gfx_img_set_src(obj_img_music_background, &music_background_dsc_);
     gfx_img_set_src(obj_img_music_disc, &music_disc_dsc_);
-    gfx_obj_set_visible(obj_img_music_background, true);
-    gfx_obj_set_visible(obj_img_music_disc, true);
+    music_artwork_ready_ = true;
+    const bool show_music = music_overlay_requested_.load();
+    CommitMusicSceneLocked();
+    if (show_music) {
+        ESP_LOGI(TAG, "MUSIC_METRIC artwork commit overlay=1");
+    }
     Unlock();
-    music_rotation_paused_ = false;
-    if (music_rotation_timer_ && music_rotation_task_) {
+    if (music_fallback_timer_) {
+        esp_timer_stop(music_fallback_timer_);
+    }
+    music_rotation_paused_ = !show_music;
+    if (show_music && music_rotation_timer_ && music_rotation_task_) {
         esp_timer_start_periodic(music_rotation_timer_, 100 * 1000);
     }
+}
+
+void EmoteEngine::CommitMusicFallback()
+{
+    if (!music_scene_active_ || music_artwork_ready_) {
+        return;
+    }
+    music_rotation_paused_ = true;
+    WaitForMusicRotationIdle();
+    Lock();
+    if (!music_scene_active_ || music_artwork_ready_) {
+        Unlock();
+        return;
+    }
+    ClearMusicArtworkLocked();
+    CreateFallbackDiscLocked();
+    if (!music_disc_source_) {
+        Unlock();
+        ESP_LOGE(TAG, "Failed to allocate fallback music scene");
+        return;
+    }
+    music_artwork_ready_ = true;
+    const bool show_music = music_overlay_requested_.load();
+    CommitMusicSceneLocked();
+    Unlock();
+    if (music_fallback_timer_) {
+        esp_timer_stop(music_fallback_timer_);
+    }
+    music_rotation_paused_ = !show_music;
+    if (show_music && music_rotation_timer_ && music_rotation_task_) {
+        esp_timer_start_periodic(music_rotation_timer_, 100 * 1000);
+    }
+    ESP_LOGI(TAG, "MUSIC_METRIC fallback commit overlay=%d elapsed_ms=%d", show_music,
+             static_cast<int>((esp_timer_get_time() - music_scene_started_us_.load()) / 1000));
 }
 
 void EmoteEngine::SetMusicLyrics(const std::string& previous, const std::string& current,
@@ -662,29 +773,72 @@ void EmoteEngine::SetMusicOverlayVisible(bool visible)
     if (!music_scene_active_) {
         return;
     }
+    music_overlay_requested_ = visible;
+    const bool actual_visible = visible && music_artwork_ready_.load();
+    const bool visibility_changed =
+        music_overlay_visible_.exchange(actual_visible) != actual_visible;
+    if (visibility_changed) {
+        ESP_LOGI(TAG, "MUSIC_METRIC overlay visible=%d", actual_visible);
+    }
+    music_rotation_paused_ = !actual_visible;
+    if (!actual_visible && visibility_changed && music_rotation_timer_) {
+        esp_timer_stop(music_rotation_timer_);
+    }
+    // Before artwork is ready, retain the current expression exactly as-is.
+    // ApplyRenderModel() will keep normal eyes current while this function
+    // only records the requested music ownership.
+    if (visible && !actual_visible) {
+        return;
+    }
     Lock();
-    SetMusicObjectsVisible(visible);
-    gfx_obj_set_visible(obj_anim_eye, !visible);
-    gfx_obj_set_visible(obj_img_icon, !visible);
-    gfx_obj_set_visible(obj_label_tips, !visible);
-    if (visible) {
+    gfx_emote_set_bg_color(engine_handle_, GFX_COLOR_HEX(actual_visible ? 0x08101E : 0x000000));
+    SetMusicObjectsVisible(actual_visible);
+    if (actual_visible) {
+        gfx_obj_set_visible(obj_img_music_background, music_background_data_ != nullptr);
+    }
+    gfx_obj_set_visible(obj_anim_eye, !actual_visible);
+    gfx_obj_set_visible(obj_anim_mic, false);
+    gfx_obj_set_visible(obj_img_icon, !actual_visible);
+    gfx_obj_set_visible(obj_label_tips, !actual_visible);
+    gfx_obj_set_visible(obj_label_time, false);
+    if (actual_visible) {
         // ExpressionDirector may have selected a 20 FPS media expression just
         // before restoring the music layer. Keep the hidden animation stopped
         // and return the shared graphics cadence to the safe music rate.
         gfx_anim_stop(obj_anim_eye);
         gfx_anim_set_segment(obj_anim_eye, 0, 0xFFFF, 5, false);
+    } else {
+        // ApplyRenderModel() immediately selects and starts the requested eye
+        // animation after hiding the music scene. Mark it dirty here so the
+        // first interaction frame replaces the full-screen artwork at once.
+        obj_anim_eye->is_dirty = true;
     }
     Unlock();
+    if (actual_visible && visibility_changed && music_rotation_timer_ && music_rotation_task_) {
+        const esp_err_t result = esp_timer_start_periodic(music_rotation_timer_, 100 * 1000);
+        if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "Failed to resume music rotation timer: %s",
+                     esp_err_to_name(result));
+        }
+    }
 }
 
 void EmoteEngine::ExitMusicScene()
 {
+    if (!music_scene_active_.exchange(false)) {
+        return;
+    }
+    if (music_fallback_timer_) {
+        esp_timer_stop(music_fallback_timer_);
+    }
     music_rotation_paused_ = true;
     if (music_rotation_timer_) {
         esp_timer_stop(music_rotation_timer_);
     }
     Lock();
-    music_scene_active_ = false;
+    music_overlay_requested_ = false;
+    music_overlay_visible_ = false;
+    music_artwork_ready_ = false;
     Unlock();
     WaitForMusicRotationIdle();
     Lock();
@@ -700,6 +854,12 @@ void EmoteEngine::ExitMusicScene()
     gfx_anim_start(obj_anim_eye);
     obj_anim_eye->is_dirty = true;  // animation dirtiness forces a full refresh
     Unlock();
+
+    ESP_LOGI(TAG, "MUSIC_METRIC scene exit requested");
+    if (music_release_timer_) {
+        esp_timer_stop(music_release_timer_);
+        esp_timer_start_once(music_release_timer_, 5 * 1000 * 1000);
+    }
 }
 
 void EmoteEngine::MusicRotationTimer(void* arg)
@@ -708,6 +868,32 @@ void EmoteEngine::MusicRotationTimer(void* arg)
     if (engine && engine->music_rotation_task_) {
         xTaskNotifyGive(engine->music_rotation_task_);
     }
+}
+
+void EmoteEngine::MusicFallbackTimer(void* arg)
+{
+    auto* engine = static_cast<EmoteEngine*>(arg);
+    if (!engine || !engine->music_scene_active_ || engine->music_artwork_ready_ ||
+        esp_timer_get_time() - engine->music_scene_started_us_.load() < 3 * 1000 * 1000) {
+        return;
+    }
+    Application::GetInstance().Schedule([engine]() { engine->CommitMusicFallback(); });
+}
+
+void EmoteEngine::MusicReleaseTimer(void* arg)
+{
+    auto* engine = static_cast<EmoteEngine*>(arg);
+    if (!engine || engine->music_scene_active_) {
+        return;
+    }
+    const size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t spiram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG,
+             "MUSIC_METRIC resources released elapsed_ms=5000 internal_free=%u internal_delta=%d psram_free=%u psram_delta=%d",
+             static_cast<unsigned>(internal_free),
+             static_cast<int>(internal_free) - static_cast<int>(engine->music_scene_internal_free_before_),
+             static_cast<unsigned>(spiram_free),
+             static_cast<int>(spiram_free) - static_cast<int>(engine->music_scene_spiram_free_before_));
 }
 
 void EmoteEngine::MusicRotationTask(void* arg)
@@ -722,7 +908,7 @@ void EmoteEngine::MusicRotationTask(void* arg)
         }
     }
     engine->music_rotation_task_ = nullptr;
-    vTaskDelete(nullptr);
+    vTaskDeleteWithCaps(nullptr);
 }
 
 void EmoteEngine::RotateMusicDisc()
@@ -911,6 +1097,18 @@ void EmoteDisplay::SetBehavior(const DisplayBehaviorRequest& request)
         return;
     }
 
+#if CONFIG_ECHOEAR_MUSIC_SCENE
+    if (request.source == DisplayBehaviorSource::kMusic &&
+        (request.behavior == DisplayBehavior::kMusicBuffering ||
+         request.behavior == DisplayBehavior::kMusicPlaying ||
+         request.behavior == DisplayBehavior::kMusicPaused)) {
+        // StartStreaming posts this authoritative state immediately after the
+        // scene is entered. From this point onward genuine higher-priority
+        // interaction states are allowed to cover the music UI.
+        music_scene_behavior_ready_ = true;
+    }
+#endif
+
     if (request.source == DisplayBehaviorSource::kDeviceState) {
         director_->SetBaseBehavior(request);
     } else if (request.source == DisplayBehaviorSource::kMusic) {
@@ -927,19 +1125,6 @@ void EmoteDisplay::SetBehavior(const DisplayBehaviorRequest& request)
         director_->PostTransientBehavior(request);
     }
 
-#if CONFIG_ECHOEAR_MUSIC_SCENE
-    if (engine_ && engine_->IsMusicSceneActive()) {
-        // Once a music scene has been entered it owns the display until
-        // ExitMusicScene(). The TTS/listening/idle hand-off at playback start
-        // must not expose the eye layer for a single frame.
-        if (request.source == DisplayBehaviorSource::kMusic &&
-                   (request.behavior == DisplayBehavior::kMusicBuffering ||
-                    request.behavior == DisplayBehavior::kMusicPlaying ||
-                    request.behavior == DisplayBehavior::kMusicPaused)) {
-            engine_->SetMusicOverlayVisible(true);
-        }
-    }
-#endif
 }
 
 void EmoteDisplay::SetEmotion(const char* emotion)
@@ -993,6 +1178,9 @@ void EmoteDisplay::SetChatMessage(const char* role, const char* content)
     if (expression_test_running_) {
         return;
     }
+    if (engine_ && engine_->IsMusicSceneActive() && engine_->IsMusicOverlayVisible()) {
+        return;
+    }
     engine_->Lock();
     if (content && strlen(content) > 0) {
         gfx_label_set_text(obj_label_tips, content);
@@ -1005,10 +1193,24 @@ void EmoteDisplay::EnterMusicScene(const MusicTrackInfo& track)
 {
 #if CONFIG_ECHOEAR_MUSIC_SCENE
     if (engine_) {
+        if (!engine_->IsMusicSceneActive()) {
+            music_scene_behavior_ready_ = false;
+        }
         engine_->EnterMusicScene(track);
     }
 #else
     Display::EnterMusicScene(track);
+#endif
+}
+
+void EmoteDisplay::UpdateMusicTrackInfo(const MusicTrackInfo& track)
+{
+#if CONFIG_ECHOEAR_MUSIC_SCENE
+    if (engine_) {
+        engine_->UpdateMusicTrackInfo(track);
+    }
+#else
+    Display::UpdateMusicTrackInfo(track);
 #endif
 }
 
@@ -1021,6 +1223,17 @@ void EmoteDisplay::SetMusicArtwork(const uint16_t* background, int background_wi
         engine_->SetMusicArtwork(background, background_width, background_height,
                                  disc, disc_width, disc_height);
     }
+#endif
+}
+
+void EmoteDisplay::CommitMusicFallback()
+{
+#if CONFIG_ECHOEAR_MUSIC_SCENE
+    if (engine_) {
+        engine_->CommitMusicFallback();
+    }
+#else
+    Display::CommitMusicFallback();
 #endif
 }
 
@@ -1049,6 +1262,7 @@ void EmoteDisplay::UpdateMusicProgress(int position_ms, int duration_ms)
 void EmoteDisplay::ExitMusicScene()
 {
 #if CONFIG_ECHOEAR_MUSIC_SCENE
+    music_scene_behavior_ready_ = false;
     if (engine_) {
         engine_->ExitMusicScene();
     }
@@ -1205,12 +1419,18 @@ void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
     }
 
 #if CONFIG_ECHOEAR_MUSIC_SCENE
-    // ExpressionDirector may publish the final speaking/listening state after
-    // EnterMusicScene(). Do not let that late callback briefly expose the mic
-    // waveform or eye animation over the music scene.
     if (engine_->IsMusicSceneActive()) {
-        engine_->SetMusicOverlayVisible(true);
-        return;
+        // Before the first music behavior arrives, callbacks can still belong
+        // to the speaking/listening hand-off that initiated playback. Keep the
+        // scene visible during that narrow window to avoid a one-frame flash.
+        // Afterwards the director's selected semantic state is authoritative:
+        // P0-P3 interactions cover music, and media state restores it.
+        const bool show_music = !music_scene_behavior_ready_ ||
+                                render_model.music_scene_visible;
+        engine_->SetMusicOverlayVisible(show_music);
+        if (engine_->IsMusicOverlayVisible()) {
+            return;
+        }
     }
 #endif
 

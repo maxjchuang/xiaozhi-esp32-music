@@ -286,7 +286,14 @@ void Display::EnterMusicScene(const MusicTrackInfo& track) {
     SetMusicInfo(track.title.c_str());
 }
 
+void Display::UpdateMusicTrackInfo(const MusicTrackInfo& track) {
+    SetMusicInfo(track.title.c_str());
+}
+
 void Display::SetMusicArtwork(const uint16_t*, int, int, const uint16_t*, int, int) {
+}
+
+void Display::CommitMusicFallback() {
 }
 
 void Display::SetMusicLyricWindow(const std::string&, const std::string& current,

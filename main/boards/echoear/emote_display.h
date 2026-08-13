@@ -39,15 +39,18 @@ public:
     
     void SetIcon(int asset_id);
     void EnterMusicScene(const MusicTrackInfo& track);
+    void UpdateMusicTrackInfo(const MusicTrackInfo& track);
     void SetMusicArtwork(const uint16_t* background, int background_width,
                          int background_height, const uint16_t* disc,
                          int disc_width, int disc_height);
+    void CommitMusicFallback();
     void SetMusicLyrics(const std::string& previous, const std::string& current,
                         const std::string& next);
     void SetMusicProgress(int position_ms, int duration_ms);
     void SetMusicOverlayVisible(bool visible);
     void ExitMusicScene();
     bool IsMusicSceneActive() const { return music_scene_active_; }
+    bool IsMusicOverlayVisible() const { return music_overlay_visible_; }
     mmap_assets_handle_t GetAssetsHandle() const { return assets_handle_; }
 
     // Callback functions (public to be accessible from static helper functions)
@@ -64,21 +67,34 @@ private:
     gfx_image_dsc_t music_background_dsc_{};
     gfx_image_dsc_t music_disc_dsc_{};
     esp_timer_handle_t music_rotation_timer_ = nullptr;
+    esp_timer_handle_t music_fallback_timer_ = nullptr;
+    esp_timer_handle_t music_release_timer_ = nullptr;
     TaskHandle_t music_rotation_task_ = nullptr;
     std::atomic<bool> music_rotation_task_stopping_{false};
     std::atomic<bool> music_rotation_paused_{true};
     std::atomic<bool> music_rotation_busy_{false};
     std::atomic<bool> music_scene_active_{false};
+    // requested is the director's desired foreground ownership; visible is
+    // the state actually committed to the panel after artwork is ready.
+    std::atomic<bool> music_overlay_requested_{false};
+    std::atomic<bool> music_overlay_visible_{false};
+    std::atomic<bool> music_artwork_ready_{false};
+    std::atomic<int64_t> music_scene_started_us_{0};
+    size_t music_scene_internal_free_before_ = 0;
+    size_t music_scene_spiram_free_before_ = 0;
     float music_disc_angle_ = 0.0f;
     std::array<int16_t, 192> music_disc_left_{};
     std::array<int16_t, 192> music_disc_right_{};
 
     void ClearMusicArtworkLocked();
     void CreateFallbackDiscLocked();
+    void CommitMusicSceneLocked();
     void InitializeMusicDiscBuffer(uint8_t* buffer);
     void WaitForMusicRotationIdle();
     void RotateMusicDisc();
     static void MusicRotationTimer(void* arg);
+    static void MusicFallbackTimer(void* arg);
+    static void MusicReleaseTimer(void* arg);
     static void MusicRotationTask(void* arg);
 };
 
@@ -92,9 +108,11 @@ public:
     virtual void SetStatus(const char* status) override;
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void EnterMusicScene(const MusicTrackInfo& track) override;
+    virtual void UpdateMusicTrackInfo(const MusicTrackInfo& track) override;
     virtual void SetMusicArtwork(const uint16_t* background, int background_width,
                                  int background_height, const uint16_t* disc,
                                  int disc_width, int disc_height) override;
+    virtual void CommitMusicFallback() override;
     virtual void SetMusicLyricWindow(const std::string& previous,
                                      const std::string& current,
                                      const std::string& next) override;
@@ -121,6 +139,9 @@ private:
     std::unique_ptr<anim::EmoteEngine> engine_;
     std::unique_ptr<anim::ExpressionDirector> director_;
     std::atomic<bool> expression_test_running_{false};
+    // Suppress stale speaking/listening callbacks during the short hand-off
+    // between EnterMusicScene() and the first authoritative music behavior.
+    std::atomic<bool> music_scene_behavior_ready_{false};
 };
 
 } // namespace anim

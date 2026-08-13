@@ -38,7 +38,8 @@ bool ExpressionRenderModel::operator==(const ExpressionRenderModel& other) const
            fps == other.fps &&
            icon_asset_id == other.icon_asset_id &&
            ui_mode == other.ui_mode &&
-           text == other.text;
+           text == other.text &&
+           music_scene_visible == other.music_scene_visible;
 }
 
 ExpressionDirector::ExpressionDirector(RenderCallback render_callback)
@@ -572,9 +573,11 @@ ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavio
                 MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text};
     case DisplayBehavior::kThinking:
     case DisplayBehavior::kToolRunning:
-    case DisplayBehavior::kMusicBuffering:
         return {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
+    case DisplayBehavior::kMusicBuffering:
+        return {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
+                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text, true};
     case DisplayBehavior::kSpeaking:
         return {MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
@@ -589,10 +592,10 @@ ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavio
                 MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kMusicPlaying:
         return {MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
+                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text, true};
     case DisplayBehavior::kMusicPaused:
         return {MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
-                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
+                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text, true};
     }
 
     return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,

@@ -38,9 +38,11 @@ public:
     virtual void SetChatMessage(const char* role, const char* content);
     virtual void SetMusicInfo(const char* song_name);
     virtual void EnterMusicScene(const MusicTrackInfo& track);
+    virtual void UpdateMusicTrackInfo(const MusicTrackInfo& track);
     virtual void SetMusicArtwork(const uint16_t* background, int background_width,
                                  int background_height, const uint16_t* disc,
                                  int disc_width, int disc_height);
+    virtual void CommitMusicFallback();
     virtual void SetMusicLyricWindow(const std::string& previous,
                                      const std::string& current,
                                      const std::string& next);

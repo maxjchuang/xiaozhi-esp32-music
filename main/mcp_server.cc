@@ -309,6 +309,16 @@
                  }
                  return "{\"success\": true, \"message\": \"音频开始播放\"}";
              });
+
+         AddTool("self.online_music.stop_music",
+             "立即停止当前音乐播放。当用户说停止播放、别放了、关闭音乐、暂停当前歌曲时，必须直接调用此工具；不需要先调用 self.get_device_status。",
+             PropertyList(),
+             [music](const PropertyList& properties) -> ReturnValue {
+                 const bool was_playing = music->RequestStopStreaming();
+                 return was_playing
+                     ? "{\"success\": true, \"message\": \"音乐已停止\"}"
+                     : "{\"success\": true, \"message\": \"当前没有音乐在播放\"}";
+             });
  
          AddTool("self.music.set_display_mode",
              "设置音乐播放时的显示模式。可以选择显示频谱或歌词，比如用户说‘打开频谱’或者‘显示频谱’，‘打开歌词’或者‘显示歌词’就设置对应的显示模式。\n"
@@ -591,6 +601,23 @@
      }
 
      BeginToolBehavior(tool_name);
+
+     // Stopping music must remain available under the low-memory condition
+     // created by decoded artwork and audio buffers. Execute this signal-only
+     // tool in the protocol callback instead of allocating the normal 6 KiB
+     // pthread; RequestStopStreaming() never waits for worker completion.
+     if (tool_name == "self.online_music.stop_music") {
+         try {
+             auto result = (*tool_iter)->Call(arguments);
+             ReplyResult(id, result);
+             FinishToolBehavior(tool_name, true);
+         } catch (const std::exception& e) {
+             ESP_LOGE(TAG, "tools/call: %s", e.what());
+             ReplyError(id, e.what());
+             FinishToolBehavior(tool_name, false);
+         }
+         return;
+     }
  
      // Start a task to receive data with stack size
      esp_pthread_cfg_t cfg = esp_pthread_get_default_config();

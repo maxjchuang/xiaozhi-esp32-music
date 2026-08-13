@@ -233,6 +233,14 @@ std::string WifiBoard::GetDeviceStatusJson() {
     }
     cJSON_AddItemToObject(root, "audio_speaker", audio_speaker);
 
+    auto music = board.GetMusic();
+    if (music) {
+        auto music_status = cJSON_CreateObject();
+        cJSON_AddBoolToObject(music_status, "playing", music->IsPlaying());
+        cJSON_AddBoolToObject(music_status, "downloading", music->IsDownloading());
+        cJSON_AddItemToObject(root, "music", music_status);
+    }
+
     // Screen brightness
     auto backlight = board.GetBacklight();
     auto screen = cJSON_CreateObject();

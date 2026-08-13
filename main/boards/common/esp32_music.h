@@ -75,8 +75,9 @@ private:
     bool mp3_decoder_initialized_;
     
     // 私有方法
-    void DownloadAudioStream(const std::string& music_url);
-    void PlayAudioStream();
+    void DownloadAudioStream(const std::string& music_url, uint32_t generation);
+    void PlayAudioStream(uint32_t generation);
+    bool StartStreamingForGeneration(const std::string& music_url, uint32_t generation);
     void ClearAudioBuffer();
     bool InitializeMp3Decoder();
     void CleanupMp3Decoder();
@@ -107,7 +108,9 @@ public:
     // 新增方法
     virtual bool StartStreaming(const std::string& music_url) override;
     virtual bool StopStreaming() override;  // 停止流式播放
+    virtual bool RequestStopStreaming() override;
     virtual size_t GetBufferSize() const override { return buffer_size_; }
+    virtual bool IsPlaying() const override { return is_playing_; }
     virtual bool IsDownloading() const override { return is_downloading_; }
     virtual int16_t* GetAudioData() override { return final_pcm_data_fft; }
     

@@ -25,6 +25,10 @@ struct ExpressionRenderModel {
     int icon_asset_id;
     ExpressionUiMode ui_mode;
     std::string text;
+    // True only when the selected semantic state permits the immersive music
+    // scene to own the display. Higher-priority interaction states leave this
+    // false so they can temporarily cover the music UI.
+    bool music_scene_visible = false;
 
     bool operator==(const ExpressionRenderModel& other) const;
 };
