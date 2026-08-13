@@ -15,6 +15,27 @@
 - MCP Provider、媒体代理、标准 MCP 与 WebSocket 桥接测试全部通过。
 - 清单版本、令牌路由、歌词大小、图片大小与尺寸限制均有测试覆盖。
 
+保存串口日志后执行基础检查：
+
+```bash
+python3 scripts/verify_echoear_phase2.py echoear-music-phase2.log
+```
+
+结构化媒体加载耗时和交互覆盖/恢复检查：
+
+```bash
+python3 scripts/verify_echoear_phase2.py \
+  --structured --interaction echoear-music-phase2.log
+```
+
+完整稳定性门槛：
+
+```bash
+python3 scripts/verify_echoear_phase2.py --full echoear-music-phase2-soak.log
+```
+
+固件会输出统一的 `MUSIC_METRIC` 日志，包含元数据、歌词、封面耗时、音频欠载、音乐层覆盖切换和退出后的内存差值。歌词与声音的 ±700 ms 偏差和旋转观感仍需人工确认。
+
 ## 合入后稳定性门槛
 
 - 连续 50 次对话。
@@ -22,4 +43,3 @@
 - 连续 20 次网络断开和恢复。
 - 持续运行 8 小时，无崩溃、看门狗、掉电复位或 WakeNet 无法恢复。
 - 停止后 5 秒内释放音乐图片资源；空闲内部 SRAM 相比基线下降不超过 8 KiB。
-

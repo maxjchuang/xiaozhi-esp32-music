@@ -681,7 +681,7 @@ bool Esp32Music::Play(const MusicPlaybackRequest& request)
     }
 
     ESP_LOGI(TAG, "Starting approved URL playback: %s", current_song_name_.c_str());
-    if (!StartStreaming(current_music_url_)) {
+    if (!StartStreamingForGeneration(current_music_url_, generation)) {
         if (display) {
             display->ExitMusicScene();
         }
@@ -701,6 +701,7 @@ bool Esp32Music::Play(const MusicPlaybackRequest& request)
 
 void Esp32Music::LoadMetadata(uint32_t generation, const std::string& metadata_url)
 {
+    const int64_t metadata_started_us = esp_timer_get_time();
     std::vector<uint8_t> body;
     if (!DownloadHttpResource(metadata_url, kMaxManifestBytes, "application/json", body) ||
         generation != playback_generation_) {
@@ -741,6 +742,9 @@ void Esp32Music::LoadMetadata(uint32_t generation, const std::string& metadata_u
         ESP_LOGW(TAG, "Music manifest text is too long");
         return;
     }
+    ESP_LOGI(TAG, "MUSIC_METRIC metadata generation=%u elapsed_ms=%d",
+             static_cast<unsigned>(generation),
+             static_cast<int>((esp_timer_get_time() - metadata_started_us) / 1000));
     track_duration_ms_ = info.duration_ms;
     if (auto display = Board::GetInstance().GetDisplay()) {
         display->EnterMusicScene(info);
@@ -771,6 +775,9 @@ void Esp32Music::LoadMetadata(uint32_t generation, const std::string& metadata_u
         lyrics_loaded = DownloadLyrics(lyric_url);
     }
     if (generation == playback_generation_) {
+        ESP_LOGI(TAG, "MUSIC_METRIC lyrics generation=%u available=%d elapsed_ms=%d",
+                 static_cast<unsigned>(generation), lyrics_loaded,
+                 static_cast<int>((esp_timer_get_time() - metadata_started_us) / 1000));
         if (auto display = Board::GetInstance().GetDisplay()) {
             // Blank means that lyrics exist but their first timestamp has not
             // arrived yet; only a missing/failed lyric resource says unavailable.
@@ -778,6 +785,7 @@ void Esp32Music::LoadMetadata(uint32_t generation, const std::string& metadata_u
         }
     }
 
+    bool artwork_loaded = false;
     auto* artwork = cJSON_GetObjectItem(root.get(), "artwork");
     if (cJSON_IsObject(artwork)) {
         auto* background_item = cJSON_GetObjectItem(artwork, "background_url");
@@ -803,11 +811,17 @@ void Esp32Music::LoadMetadata(uint32_t generation, const std::string& metadata_u
                     display->SetMusicArtwork(
                         reinterpret_cast<uint16_t*>(background_pixels.get()), 360, 360,
                         reinterpret_cast<uint16_t*>(disc_pixels.get()), 192, 192);
+                    artwork_loaded = true;
                 }
             } else {
                 ESP_LOGW(TAG, "Music artwork unavailable; keeping fallback theme");
             }
         }
+    }
+    if (generation == playback_generation_) {
+        ESP_LOGI(TAG, "MUSIC_METRIC artwork generation=%u available=%d elapsed_ms=%d",
+                 static_cast<unsigned>(generation), artwork_loaded,
+                 static_cast<int>((esp_timer_get_time() - metadata_started_us) / 1000));
     }
 
     if (lyrics_loaded && generation == playback_generation_) {
@@ -823,6 +837,12 @@ void Esp32Music::LoadMetadata(uint32_t generation, const std::string& metadata_u
 
 // 开始流式播放
 bool Esp32Music::StartStreaming(const std::string &music_url)
+{
+    return StartStreamingForGeneration(music_url, ++playback_generation_);
+}
+
+bool Esp32Music::StartStreamingForGeneration(const std::string &music_url,
+                                              uint32_t generation)
 {
     if (music_url.empty())
     {
@@ -871,10 +891,11 @@ bool Esp32Music::StartStreaming(const std::string &music_url)
     is_downloading_ = true;
     is_playing_ = true;
     PostMusicBehavior(DisplayBehavior::kMusicBuffering, current_song_name_);
-    download_thread_ = std::thread(&Esp32Music::DownloadAudioStream, this, music_url);
+    download_thread_ = std::thread(&Esp32Music::DownloadAudioStream, this, music_url,
+                                   generation);
 
     // 开始播放线程（会等待缓冲区有足够数据）
-    play_thread_ = std::thread(&Esp32Music::PlayAudioStream, this);
+    play_thread_ = std::thread(&Esp32Music::PlayAudioStream, this, generation);
 
     ESP_LOGI(TAG, "Streaming threads started successfully");
 
@@ -997,13 +1018,37 @@ bool Esp32Music::StopStreaming()
     return true;
 }
 
+bool Esp32Music::RequestStopStreaming()
+{
+    const bool was_active = is_playing_.exchange(false) |
+                            is_downloading_.exchange(false);
+    is_lyric_running_ = false;
+    ++playback_generation_;
+
+    // Do not join the HTTP, decoder, lyric or metadata workers here. Voice
+    // control reaches this path while the artwork scene leaves very little
+    // contiguous internal SRAM, so creating a separate tool task is unsafe.
+    // Each worker observes the flags/generation and releases itself.
+    buffer_cv_.notify_all();
+    PostMusicBehavior(DisplayBehavior::kIdle, current_song_name_);
+    if (auto display = Board::GetInstance().GetDisplay()) {
+        display->SetMusicInfo("");
+        display->ExitMusicScene();
+    }
+    ESP_LOGI(TAG, "Immediate music stop requested active=%d generation=%u",
+             was_active, static_cast<unsigned>(playback_generation_.load()));
+    return was_active;
+}
+
 // 流式下载音频数据
-void Esp32Music::DownloadAudioStream(const std::string &music_url)
+void Esp32Music::DownloadAudioStream(const std::string &music_url, uint32_t generation)
 {
     ESP_LOGD(TAG, "Starting audio stream download from: %s", music_url.c_str());
 
-    auto finish_download = [this]() {
-        is_downloading_ = false;
+    auto finish_download = [this, generation]() {
+        if (generation == playback_generation_) {
+            is_downloading_ = false;
+        }
         buffer_cv_.notify_all();
     };
 
@@ -1194,7 +1239,9 @@ void Esp32Music::DownloadAudioStream(const std::string &music_url)
     }
 
     http->Close();
-    is_downloading_ = false;
+    if (generation == playback_generation_) {
+        is_downloading_ = false;
+    }
 
     // 通知播放线程下载完成
     {
@@ -1206,7 +1253,7 @@ void Esp32Music::DownloadAudioStream(const std::string &music_url)
 }
 
 // 流式播放音频数据
-void Esp32Music::PlayAudioStream()
+void Esp32Music::PlayAudioStream(uint32_t generation)
 {
     ESP_LOGI(TAG, "Starting audio stream playback");
 
@@ -1289,6 +1336,8 @@ void Esp32Music::PlayAudioStream()
     PostMusicBehavior(DisplayBehavior::kMusicPlaying, current_song_name_);
 
     size_t total_played = 0;
+    uint32_t underrun_count = 0;
+    int64_t underrun_total_ms = 0;
     uint8_t *mp3_input_buffer = nullptr;
     int bytes_left = 0;
     uint8_t *read_ptr = nullptr;
@@ -1312,26 +1361,15 @@ void Esp32Music::PlayAudioStream()
         auto &app = Application::GetInstance();
         DeviceState current_state = app.GetDeviceState();
 
-        // 状态转换：说话中-》聆听中-》待机状态-》播放音乐
-        if (current_state == kDeviceStateListening || current_state == kDeviceStateSpeaking)
+        // Once playback has started, a later wake/listen/speak/error state is
+        // a genuine user interaction. Pause feeding decoded music into the
+        // audio queue and let ExpressionDirector cover the music scene. Do not
+        // force the application back to idle; playback resumes naturally when
+        // the conversation finishes.
+        if (current_state != kDeviceStateIdle)
         {
-            if (current_state == kDeviceStateSpeaking)
-            {
-                ESP_LOGI(TAG, "Device is in speaking state, switching to listening state for music playback");
-            }
-            if (current_state == kDeviceStateListening)
-            {
-                ESP_LOGI(TAG, "Device is in listening state, switching to idle state for music playback");
-            }
-            // 切换状态
-            app.ToggleChatState(); // 变成待机状态
-            vTaskDelay(pdMS_TO_TICKS(300));
-            continue;
-        }
-        else if (current_state != kDeviceStateIdle)
-        { // 不是待机状态，就一直卡在这里，不让播放音乐
-            ESP_LOGD(TAG, "Device state is %d, pausing music playback", current_state);
-            // 如果不是空闲状态，暂停播放
+            ESP_LOGD(TAG, "Device state is %d, temporarily pausing music playback",
+                     current_state);
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
@@ -1382,8 +1420,17 @@ void Esp32Music::PlayAudioStream()
                         break;
                     }
                     // 等待新数据
+                    const int64_t wait_started_us = esp_timer_get_time();
                     buffer_cv_.wait(lock, [this]
                                     { return !audio_buffer_.empty() || !is_downloading_; });
+                    const int64_t wait_ms = (esp_timer_get_time() - wait_started_us) / 1000;
+                    if (wait_ms >= 20) {
+                        ++underrun_count;
+                        underrun_total_ms += wait_ms;
+                        ESP_LOGW(TAG, "MUSIC_METRIC audio_underrun wait_ms=%d count=%u",
+                                 static_cast<int>(wait_ms),
+                                 static_cast<unsigned>(underrun_count));
+                    }
                     if (audio_buffer_.empty())
                     {
                         continue;
@@ -1592,14 +1639,29 @@ void Esp32Music::PlayAudioStream()
 
     // 播放结束时进行基本清理，但不调用StopStreaming避免线程自我等待
     ESP_LOGI(TAG, "Audio stream playback finished, total played: %d bytes", total_played);
+    ESP_LOGI(TAG,
+             "MUSIC_METRIC audio_complete bytes=%u underruns=%u underrun_total_ms=%d",
+             static_cast<unsigned>(total_played),
+             static_cast<unsigned>(underrun_count),
+             static_cast<int>(underrun_total_ms));
     ESP_LOGI(TAG, "Performing basic cleanup from play thread");
 
-    // 停止播放标志
-    is_playing_ = false;
-    ++playback_generation_;
-    PostMusicBehavior(DisplayBehavior::kIdle, current_song_name_);
-    if (auto display = Board::GetInstance().GetDisplay()) {
-        display->ExitMusicScene();
+    // A superseded playback thread must never tear down the replacement
+    // track's scene or invalidate its metadata generation. This happens when
+    // the user wakes the device during music and immediately asks for a new
+    // song: StartStreaming() joins this worker while the new generation is
+    // already authoritative.
+    if (generation == playback_generation_) {
+        is_playing_ = false;
+        PostMusicBehavior(DisplayBehavior::kIdle, current_song_name_);
+        if (auto display = Board::GetInstance().GetDisplay()) {
+            display->ExitMusicScene();
+        }
+    } else {
+        ESP_LOGI(TAG,
+                 "Playback generation %u superseded by %u; preserving replacement music scene",
+                 static_cast<unsigned>(generation),
+                 static_cast<unsigned>(playback_generation_.load()));
     }
 
     // Natural playback completion does not pass through StopStreaming().

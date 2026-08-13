@@ -48,6 +48,7 @@ public:
     void SetMusicOverlayVisible(bool visible);
     void ExitMusicScene();
     bool IsMusicSceneActive() const { return music_scene_active_; }
+    bool IsMusicOverlayVisible() const { return music_overlay_visible_; }
     mmap_assets_handle_t GetAssetsHandle() const { return assets_handle_; }
 
     // Callback functions (public to be accessible from static helper functions)
@@ -69,6 +70,9 @@ private:
     std::atomic<bool> music_rotation_paused_{true};
     std::atomic<bool> music_rotation_busy_{false};
     std::atomic<bool> music_scene_active_{false};
+    std::atomic<bool> music_overlay_visible_{false};
+    size_t music_scene_internal_free_before_ = 0;
+    size_t music_scene_spiram_free_before_ = 0;
     float music_disc_angle_ = 0.0f;
     std::array<int16_t, 192> music_disc_left_{};
     std::array<int16_t, 192> music_disc_right_{};
@@ -121,6 +125,9 @@ private:
     std::unique_ptr<anim::EmoteEngine> engine_;
     std::unique_ptr<anim::ExpressionDirector> director_;
     std::atomic<bool> expression_test_running_{false};
+    // Suppress stale speaking/listening callbacks during the short hand-off
+    // between EnterMusicScene() and the first authoritative music behavior.
+    std::atomic<bool> music_scene_behavior_ready_{false};
 };
 
 } // namespace anim

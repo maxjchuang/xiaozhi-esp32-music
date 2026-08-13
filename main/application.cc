@@ -809,18 +809,6 @@ void Application::SetDeviceState(DeviceState state)
         0,
     });
 
-    // 当从idle状态变成其他任何状态时，停止音乐播放
-    if (previous_state == kDeviceStateIdle && state != kDeviceStateIdle)
-    {
-        auto music = board.GetMusic();
-        if (music)
-        {
-            ESP_LOGI(TAG, "Stopping music streaming due to state change: %s -> %s",
-                     STATE_STRINGS[previous_state], STATE_STRINGS[state]);
-            music->StopStreaming();
-        }
-    }
-
     switch (state)
     {
     case kDeviceStateUnknown:
@@ -971,13 +959,12 @@ void Application::AddAudioData(AudioStreamPacket &&packet)
             std::vector<int16_t> pcm_data(num_samples);
             memcpy(pcm_data.data(), packet.payload.data(), packet.payload.size());
 
-            // 检查采样率是否匹配，如果不匹配则进行简单重采样
+            // EchoEar's duplex codec keeps microphone capture, AFE reference
+            // and speaker playback in one native clock domain. Changing only
+            // the TX clock for 44.1/48 kHz music breaks speech recognition and
+            // the ES8311 output device, so music is resampled in software.
             if (packet.sample_rate != codec->output_sample_rate())
             {
-                // ESP_LOGI(TAG, "Resampling music audio from %d to %d Hz",
-                //         packet.sample_rate, codec->output_sample_rate());
-
-                // 验证采样率参数
                 if (packet.sample_rate <= 0 || codec->output_sample_rate() <= 0)
                 {
                     ESP_LOGE(TAG, "Invalid sample rates: %d -> %d",
@@ -985,85 +972,30 @@ void Application::AddAudioData(AudioStreamPacket &&packet)
                     return;
                 }
 
-                std::vector<int16_t> resampled;
-
-                if (packet.sample_rate > codec->output_sample_rate())
-                {
-                    ESP_LOGI(TAG, "Music Player: Adjust the sampling rate from %d Hz to %d Hz",
-                             codec->output_sample_rate(), packet.sample_rate);
-
-                    // 尝试动态切换采样率
-                    if (codec->SetOutputSampleRate(packet.sample_rate))
-                    {
-                        ESP_LOGI(TAG, "Successfully switched to music playback sampling rate: %d Hz", packet.sample_rate);
-                    }
-                    else
-                    {
-                        ESP_LOGW(TAG, "Unable to switch sampling rate, continue using current sampling rate: %d Hz", codec->output_sample_rate());
-                    }
-                }
-                else
-                {
-                    if (packet.sample_rate > codec->output_sample_rate())
-                    {
-                        // 下采样：简单丢弃部分样本
-                        float downsample_ratio = static_cast<float>(packet.sample_rate) / codec->output_sample_rate();
-                        size_t expected_size = static_cast<size_t>(pcm_data.size() / downsample_ratio + 0.5f);
-                        std::vector<int16_t> resampled(expected_size);
-                        size_t resampled_index = 0;
-
-                        for (size_t i = 0; i < pcm_data.size(); ++i)
-                        {
-                            if (i % static_cast<size_t>(downsample_ratio) == 0)
-                            {
-                                resampled[resampled_index++] = pcm_data[i];
-                            }
-                        }
-
-                        pcm_data = std::move(resampled);
-                        ESP_LOGI(TAG, "Downsampled %d -> %d samples (ratio: %.2f)",
-                                 pcm_data.size(), resampled.size(), downsample_ratio);
-                    }
-                    else if (packet.sample_rate < codec->output_sample_rate())
-                    {
-                        // 上采样：线性插值
-                        float upsample_ratio = codec->output_sample_rate() / static_cast<float>(packet.sample_rate);
-                        size_t expected_size = static_cast<size_t>(pcm_data.size() * upsample_ratio + 0.5f);
-                        resampled.reserve(expected_size);
-
-                        for (size_t i = 0; i < pcm_data.size(); ++i)
-                        {
-                            // 添加原始样本
-                            resampled.push_back(pcm_data[i]);
-
-                            // 计算需要插值的样本数
-                            int interpolation_count = static_cast<int>(upsample_ratio) - 1;
-                            if (interpolation_count > 0 && i + 1 < pcm_data.size())
-                            {
-                                int16_t current = pcm_data[i];
-                                int16_t next = pcm_data[i + 1];
-                                for (int j = 1; j <= interpolation_count; ++j)
-                                {
-                                    float t = static_cast<float>(j) / (interpolation_count + 1);
-                                    int16_t interpolated = static_cast<int16_t>(current + (next - current) * t);
-                                    resampled.push_back(interpolated);
-                                }
-                            }
-                            else if (interpolation_count > 0)
-                            {
-                                // 最后一个样本，直接重复
-                                for (int j = 1; j <= interpolation_count; ++j)
-                                {
-                                    resampled.push_back(pcm_data[i]);
-                                }
-                            }
-                        }
-
-                        ESP_LOGI(TAG, "Upsampled %d -> %d samples (ratio: %.2f)",
-                                 pcm_data.size(), resampled.size(), upsample_ratio);
+                const int target_rate = codec->output_sample_rate();
+                const size_t output_samples = std::max<size_t>(
+                    1, (pcm_data.size() * static_cast<size_t>(target_rate) +
+                        packet.sample_rate / 2) / packet.sample_rate);
+                std::vector<int16_t> resampled(output_samples);
+                if (pcm_data.size() == 1 || output_samples == 1) {
+                    std::fill(resampled.begin(), resampled.end(), pcm_data.front());
+                } else {
+                    const uint64_t step_q16 =
+                        ((static_cast<uint64_t>(pcm_data.size() - 1)) << 16) /
+                        (output_samples - 1);
+                    uint64_t position_q16 = 0;
+                    for (size_t index = 0; index < output_samples; ++index) {
+                        const size_t source = std::min<size_t>(
+                            position_q16 >> 16, pcm_data.size() - 1);
+                        const size_t next = std::min(source + 1, pcm_data.size() - 1);
+                        const int fraction = position_q16 & 0xFFFF;
+                        resampled[index] = static_cast<int16_t>(
+                            pcm_data[source] +
+                            ((static_cast<int32_t>(pcm_data[next]) - pcm_data[source]) *
+                             fraction >> 16));
+                        position_q16 += step_q16;
                     }
                 }
-
                 pcm_data = std::move(resampled);
             }
 
