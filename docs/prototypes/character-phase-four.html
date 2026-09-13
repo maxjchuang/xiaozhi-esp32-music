@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EchoEar · 角色实验室</title>
+<style>
+:root{color-scheme:light;font-family:Inter,-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:#263d37;background:#f3f2eb}*{box-sizing:border-box}body{margin:0}main{max-width:1160px;margin:auto;padding:38px 32px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #d9ded4;padding-bottom:22px}.brand{font-size:15px;letter-spacing:.13em}.tag{font-size:12px;color:#677970}h1{font-size:clamp(28px,4vw,45px);font-weight:500;letter-spacing:-.04em;margin:34px 0 12px}p{color:#697870;line-height:1.8;font-size:14px}.layout{display:grid;grid-template-columns:1.25fr 1fr;gap:60px;align-items:center}.stage{position:relative;display:flex;flex-direction:column;align-items:center;padding:56px 0 18px}.device{position:relative;width:min(100%,410px);aspect-ratio:1;border-radius:46%;background:#e3e0d5;padding:23px;box-shadow:0 26px 45px #293a3822,inset 2px 3px 5px #fff,inset -4px -5px 10px #bcb9ad}.ear{position:absolute;width:100px;height:105px;background:#e5e2d7;top:-22px;border-radius:20px 80px 15px 20px;z-index:-1}.ear.left{left:8px;transform:rotate(-10deg)}.ear.right{right:8px;transform:scaleX(-1) rotate(-10deg)}canvas{display:block;background:#081312;width:100%;height:100%;border-radius:50%;box-shadow:0 0 0 6px #343b36}.caption{margin-top:30px;text-align:center;height:62px}.caption strong{font-size:17px;font-weight:500}.caption p{margin:5px;font-size:12px}.panel{padding:26px 0}h2{font-size:12px;text-transform:uppercase;letter-spacing:.13em;color:#7a887f;font-weight:500;margin:0 0 15px}.styles{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:30px}button{font:inherit;cursor:pointer;color:inherit;border:1px solid #d5dbd1;background:transparent;border-radius:12px;transition:background .15s,box-shadow .15s}button:hover{background:#e6ebdf}button:focus-visible,input:focus-visible{outline:3px solid #84a891;outline-offset:3px}button[aria-pressed=true]{background:#dce7d7;border-color:#8ea38b}.style{padding:17px;text-align:left}.style b{display:block;font-size:15px;font-weight:500}.style small{display:block;font-size:11px;color:#70806f;margin-top:7px}.states{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.states button{padding:13px 2px;font-size:13px}.controls{border-top:1px solid #d9ded4;margin-top:24px;padding-top:22px}.row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px;font-size:13px}input[type=range]{accent-color:#456752;width:48%}.primary{background:#294b3d;color:#f6f6e9;border-color:#294b3d;padding:15px 20px;width:100%;font-size:14px}.primary:hover{background:#3c624e}.secondary{padding:11px;width:100%;margin-top:9px;font-size:12px}.note{font-size:11px;line-height:1.8;color:#7a887f;margin:14px 0}.timeline{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;font-size:11px;color:#869185}.timeline span.active{color:#294b3d;font-weight:700}.footer{border-top:1px solid #d9ded4;margin-top:26px;padding-top:20px;display:flex;justify-content:space-between;gap:20px;font-size:11px;color:#7a887f}@media(max-width:760px){main{padding:24px}.layout{grid-template-columns:1fr;gap:8px}.stage{padding-top:42px}.device{width:300px}.panel{padding-top:10px}.footer{flex-direction:column}header .tag{max-width:110px;text-align:right}}
+</style>
+<style>
+.paw-studies{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:16px 0 22px}.paw-study{margin:0;text-align:center}.paw-study canvas{width:100%;height:auto;border-radius:16px;box-shadow:none}.paw-study figcaption{font-size:12px;margin-top:8px;color:#697870}.study-toggle{font-size:12px;display:flex;gap:8px;align-items:center;margin-top:12px}
+</style>
+<main>
+<header><div class="brand">ECHOEAR / 角色实验室</div><div class="tag">PHASE FOUR · 吉他扫弦 16</div></header>
+<h1>轻轻看着你，认真听你说。</h1><p>圆润的眼角、慢慢睁开的眼睛，还有一点点好奇。试着和这只小猫相处一会儿。</p>
+<div class="layout"><section class="stage" aria-label="角色预览"><div class="device"><i class="ear left"></i><i class="ear right"></i><canvas id="face" width="720" height="720" aria-label="动态眼睛预览"></canvas></div><div class="caption" aria-live="polite"><strong id="stateName">安静待机</strong><p id="description">轻轻呼吸，偶尔眨眼。</p></div></section>
+<section class="panel"><h2>01 / 软糯猫咪</h2><p>回应及时，动作轻柔。先把目光投向你，再慢慢放松眼形。</p>
+<h2>02 / 看看它的反应</h2><div class="states" id="states"></div>
+<h2 style="margin-top:26px">03 / 日常小剧场</h2><div class="states" id="acts"></div><p class="note">揉眼后保持困倦，其它动作结束回到待机。点击「慢慢困倦」也会先揉一次眼睛，不循环；随时可打断。沙锤与音符使用预设节奏，不会自动播放声音。</p>
+<div class="controls"><h2>空闲时自己玩一会儿</h2><label class="row">活跃程度 <select id="idle-mode"><option value="off">关闭</option><option value="quiet" selected>安静</option><option value="lively">活泼</option></select></label><label class="row">加速预览 · 等待时间缩短 15 倍 <input id="idle-fast" type="checkbox"></label><label class="row">模拟音乐播放 · 暂停自动动作 <input id="music-busy" type="checkbox"></label><p class="note" id="idle-status" role="status"></p><p class="note">仅安静待机时触发。安静档首次等待 90–180 秒，活泼档 45–90 秒；动作结束后至少休息 2 分钟。同一动作不连续出现，5 分钟无互动后降低频率，10 分钟后犯困。后台暂停，切回页面重新等待。自动表演中点击圆屏即进入聆听。加速仅用于预览，不改变动作速度。</p></div>
+<div class="controls"><h2>音乐陪伴 · 模拟播放</h2><label class="row">显示模式 <select id="music-view"><option value="cat">猫咪陪听</option><option value="cover">歌曲封面</option></select></label><label class="row">陪听乐器 <select id="music-instrument"><option value="shaker">沙锤</option><option value="drum">小鼓</option><option value="keys">小琴</option></select></label><button id="music-start" class="primary">开始模拟播放 · 60 秒</button><button id="music-stop" class="secondary">停止播放 → 待机</button><p class="note" id="music-status" role="status">尚未开始模拟播放</p><p class="note">不播放音频，不连接音乐服务。乐器使用预设节拍，不代表真实节奏分析。两种显示模式互斥切换，播放时点击圆屏会停止模拟并进入聆听；60 秒后模拟自然结束。封面为布局占位图，无真实歌词。</p></div>
+<h2>04 / B · 短圆猫爪</h2><p class="note">浅浅三瓣爪尖，无拇指、细手腕和肉垫。当前开放 11 个动作原型，尚未连接语音与固件。</p><div class="paw-studies"><figure class="paw-study"><canvas id="paw-open" width="240" height="220" aria-label="张开猫爪的静态轮廓"></canvas><figcaption>挥手 · 浅三瓣</figcaption></figure><figure class="paw-study"><canvas id="paw-cup" width="240" height="220" aria-label="侧面弯爪的静态轮廓"></canvas><figcaption>托腮 · 软承托</figcaption></figure><figure class="paw-study"><canvas id="paw-grip" width="240" height="220" aria-label="握住手柄的猫爪静态轮廓"></canvas><figcaption>握持 · 包住手柄</figcaption></figure></div>
+<div class="controls"><label class="row">动作幅度 <input id="intensity" type="range" min="20" max="100" value="55" aria-label="动作幅度"></label><label class="row"><span>说话节奏音 <small>（合成提示音）</small></span><input id="sound" type="checkbox"></label><button class="primary" id="demo">播放一轮对话 · 约 18 秒</button><button class="secondary" id="interrupt">模拟打断 → 立即聆听</button><div class="timeline" id="timeline"></div><p class="note">点击屏幕可预览眼神朝向，仅作设计演示；设备端触摸规则尚未变更。说话动作使用合成能量包络，不代表真实 TTS 同步。无需麦克风权限。</p></div></section></div>
+<div class="footer"><span>深色圆屏 / 暖白眼睛 / 无常驻波形与状态栏</span><span>浏览器视觉原型 · 固件性能待验证</span></div>
+</main>
+<script>
+'use strict';
+const canvas=document.querySelector('#face'),ctx=canvas.getContext('2d');
+const definitions={idle:['安静待机','轻轻呼吸，偶尔眨眼。'],wake:['注意到你','短促睁眼，再转入专注聆听。'],listen:['专注聆听','目光稳定，不催促你说完。'],think:['认真思考','先轻轻抬眼，等待较久再观察。'],speak:['正在回答','随合成节奏轻微起伏，停顿时放松。'],happy:['有点开心','弯起眼睛，轻轻抬高。'],confused:['有点困惑','一高一低，再仔细看一眼。'],sleepy:['慢慢困倦','眼睑渐低，仍可立即响应。']};
+const acts={wave:['挥爪打招呼','探出小爪子，轻轻挥两下。',3.8],chin:['托腮想想','托住脸侧，抬眼想一会儿。',5],bubble:['吹个泡泡','举起泡泡棒，追着泡泡看……啪！',7],heart:['送你小心心','两只爪子捧起一颗暖暖的心。',4.8],shaker:['摇摇沙锤','跟着预设节奏，陪你玩一小段。',7]};
+acts.rub=['困倦揉眼睛','先眯眼，抬爪轻揉两下，收爪后安静犯困。',5.4];
+acts.fish=['捉小鱼','盯着游过的小鱼，伸爪扑一下……让它游走啦。',6.5];
+acts.peek=['躲猫猫','捂住眼睛，偷偷看你一眼，再打开小爪子。',6];
+acts.drum=['敲敲小鼓','两只爪子交替敲击，轻轻跟着节拍点头。',7];
+acts.keys=['弹弹小琴','短圆小爪交替按键，陪你听一小段。',7];
+acts.guitar=['弹弹吉他','一爪扶琴颈，一爪轻扫弦，笑眯眯地陪你听。',7];
+const musicPreview={playing:false,view:'cat',instrument:'shaker',started:0,lastStatus:-Infinity};
+function endMusic(){musicPreview.playing=false;idlePlay.music=document.querySelector('#music-busy').checked;document.querySelector('#music-status').textContent='模拟播放已结束';}
+function musicScene(){setState(musicPreview.view==='cat'?musicPreview.instrument:'idle','music');if(musicPreview.view==='cover'){document.querySelector('#stateName').textContent='歌曲封面 · 模拟';document.querySelector('#description').textContent='封面布局占位，与猫咪陪听互斥显示。';}}
+function startMusic(){stopDemo();musicPreview.playing=true;musicPreview.started=performance.now();idlePlay.music=true;musicScene();}
+function musicTick(now){if(!musicPreview.playing)return;if(now-musicPreview.started>=60000){endMusic();setState('idle','internal');return;}if(now-musicPreview.lastStatus>500){musicPreview.lastStatus=now;document.querySelector('#music-status').textContent=`模拟播放 ${Math.floor((now-musicPreview.started)/1000)} / 60 秒 · ${musicPreview.view==='cat'?'猫咪陪听':'歌曲封面'}`;}}
+let state='idle',stateAt=performance.now(),last=stateAt,amount=.55,blinkAt=stateAt+2400,blinkStart=-10000,gaze={x:0,y:0,until:0},sequenceStart=null,audio=null,osc=null,gain=null;
+let idleLookAt=stateAt+6500,idleLookUntil=0,idleLookX=0;
+const idlePlay={mode:'quiet',fast:false,music:false,automatic:false,lastAct:null,lastEnd:-Infinity,lastUser:stateAt,nextAt:Infinity,lastStatus:-Infinity};
+function idleScale(){return idlePlay.fast?1/15:1;}
+function scheduleIdle(now){const scale=idleScale(),base=idlePlay.mode==='quiet'?90:45;
+ const slower=now-idlePlay.lastUser>=300000*scale?2:1;
+ idlePlay.nextAt=Math.max(now+base*(1+Math.random())*1000*scale*slower,idlePlay.lastEnd+120000*scale);}
+function idleTick(now){
+ if(idlePlay.mode!=='off'&&!document.hidden&&!idlePlay.music&&sequenceStart===null&&state==='idle'){
+  if(now-idlePlay.lastUser>=600000*idleScale()){setState('rub','automatic');idlePlay.lastAct='rub';}
+  else if(now>=idlePlay.nextAt){const pool=(idlePlay.mode==='quiet'?['chin','chin','bubble','fish']:['chin','bubble','fish','peek']).filter(key=>key!==idlePlay.lastAct);const pick=pool[Math.floor(Math.random()*pool.length)];idlePlay.lastAct=pick;setState(pick,'automatic');}
+ }
+ if(now-idlePlay.lastStatus<500)return;idlePlay.lastStatus=now;
+ const status=idlePlay.mode==='off'?'自动小剧场已关闭':document.hidden?'页面在后台，自动动作暂停':idlePlay.music?'音乐播放中，自动动作暂停':idlePlay.automatic?'正在自娱自乐 · 点击圆屏可立即打断':state==='sleepy'?'已经犯困，不再自动表演':state!=='idle'||sequenceStart!==null?'正在互动，自动动作暂停':`安静等待 · 约 ${Math.max(0,Math.ceil((idlePlay.nextAt-now)/1000))} 秒后可触发`;
+ document.querySelector('#idle-status').textContent=status;
+}
+function configureIdle(){const wasAutomatic=idlePlay.automatic;idlePlay.mode=document.querySelector('#idle-mode').value;idlePlay.fast=document.querySelector('#idle-fast').checked;idlePlay.music=musicPreview.playing||document.querySelector('#music-busy').checked;idlePlay.lastEnd=-Infinity;idlePlay.lastUser=performance.now();if(wasAutomatic)setState('idle','internal');scheduleIdle(performance.now());idlePlay.lastStatus=-Infinity;}
+// Match the approved PNG's roughly 1.8:1 upright eyes, not round blobs.
+const restingEye={w:88,h:158};
+const happyEye={smile:1,h:90};
+const pose={...restingEye,x:0,y:0,tilt:.025,smile:0,asym:0,blush:0,roll:0,yaw:0};
+const steps=[['wake',0],['listen',800],['think',4200],['speak',7900],['listen',13700],['idle',18000]];
+const buttons=document.querySelector('#states');
+for(const [key,[label]] of Object.entries(definitions)){const button=document.createElement('button');button.textContent=label;button.dataset.state=key;button.onclick=()=>{stopDemo();setState(key==='sleepy'?'rub':key)};buttons.append(button)}
+for(const key of ['wave','chin','rub','bubble','heart','fish','peek','shaker','drum','keys','guitar']){const [label]=acts[key];const button=document.createElement('button');button.textContent=label;button.dataset.state=key;button.onclick=()=>{stopDemo();setState(key)};document.querySelector('#acts').append(button)}
+const guitarOption=document.createElement('option');guitarOption.value='guitar';guitarOption.textContent='吉他';document.querySelector('#music-instrument').append(guitarOption);
+function setState(next,source='user'){const now=performance.now();if(source==='user'&&musicPreview.playing)endMusic();if(idlePlay.automatic)idlePlay.lastEnd=now;idlePlay.automatic=source==='automatic';if(source==='user'){idlePlay.lastUser=now;scheduleIdle(now);}state=next;stateAt=now;gaze.until=0;if(next==='wake'||next==='listen'){blinkStart=-10000;blinkAt=stateAt+4500;pose.x=0;pose.y=0;if(gain)gain.gain.setTargetAtTime(0,audio.currentTime,.015)}if(next==='idle'){idleLookAt=stateAt+6500;idleLookUntil=0;scheduleIdle(now);}const definition=definitions[next]||acts[next];document.querySelector('#stateName').textContent=definition[0];document.querySelector('#description').textContent=definition[1];for(const group of [buttons,document.querySelector('#acts')])group.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.state===next)));}
+function stopDemo(){sequenceStart=null;document.querySelector('#demo').textContent='播放一轮对话 · 约 18 秒';document.querySelector('#timeline').replaceChildren()}
+document.querySelector('#intensity').oninput=e=>amount=Number(e.target.value)/100;
+function initAudio(){if(!audio){audio=new AudioContext();osc=audio.createOscillator();gain=audio.createGain();osc.type='sine';gain.gain.value=0;osc.connect(gain).connect(audio.destination);osc.start()}audio.resume().catch(()=>{})}
+document.querySelector('#sound').onchange=e=>{if(e.target.checked)initAudio();else if(gain)gain.gain.setTargetAtTime(0,audio.currentTime,.02)};
+document.querySelector('#demo').onclick=()=>{if(sequenceStart!==null){stopDemo();setState('idle');return}sequenceStart=performance.now();setState('wake');document.querySelector('#demo').textContent='停止演示';document.querySelector('#timeline').replaceChildren(...steps.map(([key],i)=>{const span=document.createElement('span');span.dataset.step=i;span.textContent=definitions[key][0]+(i<steps.length-1?' →':'');return span}))};
+document.querySelector('#interrupt').onclick=()=>{stopDemo();setState('listen')};
+canvas.onpointerdown=e=>{if(idlePlay.automatic||musicPreview.playing){stopDemo();setState('listen');return;}idlePlay.lastUser=performance.now();scheduleIdle(performance.now());const rect=canvas.getBoundingClientRect();gaze={x:((e.clientX-rect.left)/rect.width-.5)*40,y:((e.clientY-rect.top)/rect.height-.5)*26,until:performance.now()+1100}};
+document.querySelector('#music-start').onclick=startMusic;
+document.querySelector('#music-stop').onclick=()=>{if(musicPreview.playing){endMusic();setState('idle');}};
+document.querySelector('#music-view').onchange=e=>{musicPreview.view=e.target.value;if(musicPreview.playing)musicScene();};
+document.querySelector('#music-instrument').onchange=e=>{musicPreview.instrument=e.target.value;if(musicPreview.playing&&musicPreview.view==='cat')musicScene();};
+for(const id of ['idle-mode','idle-fast','music-busy'])document.querySelector('#'+id).onchange=configureIdle;
+document.addEventListener('visibilitychange',()=>{if(document.hidden){if(gain)gain.gain.setTargetAtTime(0,audio.currentTime,.02);if(idlePlay.automatic)setState('idle','internal');}else{idlePlay.lastUser=performance.now();scheduleIdle(performance.now());}});
+// Six-segment capsule: circular end caps and genuinely straight middle sides.
+// Cap radius = 44 / 158 of neutral height; no slant, taper or offset tips.
+// The smile uses matching segments so transitions and blinks remain continuous.
+const cap=44/158,shoulder=.5-cap,kappa=.5522847498;
+const openContour=[0,-.5,
+ .5*kappa,-.5,.5,-shoulder-cap*kappa,.5,-shoulder,
+ .5,-shoulder/3,.5,shoulder/3,.5,shoulder,
+ .5,shoulder+cap*kappa,.5*kappa,.5,0,.5,
+ -.5*kappa,.5,-.5,shoulder+cap*kappa,-.5,shoulder,
+ -.5,shoulder/3,-.5,-shoulder/3,-.5,-shoulder,
+ -.5,-shoulder-cap*kappa,-.5*kappa,-.5,0,-.5];
+const smileContour=[0,-.45,
+ .25,-.45,.49,-.17,.5,.1,
+ .5,.15,.48,.16,.45,.13,
+ .3,-.05,.2,-.23,0,-.23,
+ -.2,-.23,-.3,-.05,-.45,.13,
+ -.48,.16,-.5,.15,-.5,.1,
+ -.49,-.17,-.25,-.45,0,-.45];
+function eye(cx,cy,w,h,tilt,smile,side=1){ctx.save();ctx.translate(cx,cy);ctx.fillStyle='#fff5db';
+ const points=openContour.map((v,i)=>(v+(smileContour[i]-v)*smile)*(i%2?h:w*side));
+ ctx.beginPath();ctx.moveTo(points[0],points[1]);for(let i=2;i<points.length;i+=6)ctx.bezierCurveTo(...points.slice(i,i+6));ctx.closePath();ctx.fill();ctx.restore();}
+function eyePerspective(side,yaw){const turn=Math.min(1,Math.abs(yaw));const far=side*yaw>0;return {x:side*118*(1-.13*turn),width:1-(far?.14:.025)*turn,height:1-(far?.035:0)*turn};}
+const clamp=v=>Math.max(0,Math.min(1,v));
+const ramp=v=>{v=clamp(v);return v*v*(3-2*v)};
+function presence(age,duration){return ramp(age/.65)*ramp((duration-age)/.65)}
+// Paw settles first (0.85 s), then the face leans (1.0–1.8 s).
+// Face returns by 3.9 s; only then does the paw withdraw (4.1–5.0 s).
+function chinPose(age){return {lift:ramp((age-.15)/.7)*(1-ramp((age-4.1)/.9)),lean:ramp((age-1)/.8)*(1-ramp((age-3.1)/.8))};}
+function rubPose(age){const lift=ramp((age-.65)/.7)*(1-ramp((age-3.5)/.9));const rubbing=age>=1.5&&age<=3.1;const phase=clamp((age-1.5)/1.6)*Math.PI*4;return {lift,close:ramp(age/.6),dx:rubbing?Math.sin(phase)*5*amount:0,dy:rubbing?(1-Math.cos(phase))*3*amount:0};}
+function fishPose(age){const swim=ramp((age-.4)/3.5),escape=ramp((age-4)/1.6);return {x:190+300*swim+170*escape,y:478-18*Math.sin(swim*Math.PI)-55*escape,escape,pounce:ramp((age-2.8)/.25)*(1-ramp((age-3.4)/.55))};}
+function peekPose(age){return {cover:ramp((age-.3)/.7)*(1-ramp((age-3.8)/.65)),peek:ramp((age-2)/.35)*(1-ramp((age-3.1)/.35)),joy:ramp((age-3.9)/.6)*ramp((6-age)/.6)};}
+function oval(x,y,rx,ry,color){ctx.fillStyle=color;ctx.beginPath();ctx.ellipse(x,y,rx,ry,0,0,Math.PI*2);ctx.fill()}
+function line(x,y,x2,y2,color,width=6){ctx.strokeStyle=color;ctx.lineWidth=width;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x2,y2);ctx.stroke()}
+// Approved B silhouette: compact rounded palm and three shallow toe lobes.
+// No human thumb, exposed wrist, pads or long fingers. Grip occludes the handle.
+function paw(x,y,angle=0,kind='open',mirror=1,c=ctx){
+ c.save();c.translate(x,y);c.rotate(angle);c.scale(mirror,1);c.fillStyle='#fff5db';c.beginPath();
+ if(kind==='open'){
+  c.moveTo(-31,-8);
+  c.bezierCurveTo(-37,-28,-19,-36,-13,-22);
+  c.bezierCurveTo(-16,-44,9,-45,12,-25);
+  c.bezierCurveTo(23,-41,38,-29,32,-12);
+  c.bezierCurveTo(43,21,19,39,-1,37);
+  c.bezierCurveTo(-24,35,-32,15,-31,-8);c.closePath();c.fill();
+ }else if(kind==='rest'){
+  // Local toes point left; mirror -1 on the right cheek to face outward.
+  c.moveTo(-35,-2);c.bezierCurveTo(-43,-11,-34,-18,-24,-12);
+  c.bezierCurveTo(-29,-24,-14,-28,-6,-17);
+  c.bezierCurveTo(-8,-29,9,-26,15,-16);
+  c.bezierCurveTo(43,-16,47,9,27,20);
+  c.bezierCurveTo(5,32,-29,24,-35,-2);c.closePath();c.fill();
+ }else if(kind==='cup'){
+  c.moveTo(-32,-5);c.bezierCurveTo(-37,-20,-20,-27,-15,-17);
+  c.bezierCurveTo(-12,-30,5,-29,9,-17);
+  c.bezierCurveTo(19,-28,33,-20,32,-5);
+  c.bezierCurveTo(34,17,17,29,-1,29);
+  c.bezierCurveTo(-19,29,-31,15,-32,-5);c.closePath();c.fill();
+ }else{
+  c.moveTo(-27,-12);c.bezierCurveTo(-22,-25,-5,-28,3,-23);
+  c.bezierCurveTo(12,-34,28,-25,25,-15);
+  c.bezierCurveTo(37,-13,37,0,29,6);
+  c.bezierCurveTo(37,17,22,31,2,31);
+  c.bezierCurveTo(-21,32,-35,8,-27,-12);c.closePath();c.fill();
+ }
+ c.restore();
+}
+function drawPawStudies(){for(const kind of ['open','cup','grip']){const c=document.querySelector('#paw-'+kind).getContext('2d');c.clearRect(0,0,240,220);c.fillStyle='#081312';c.fillRect(0,0,240,220);c.save();c.translate(120,115);c.scale(1.65,1.65);if(kind==='grip'){c.strokeStyle='#c6aa7d';c.lineWidth=9;c.lineCap='round';c.beginPath();c.moveTo(0,-55);c.lineTo(0,32);c.stroke()}paw(0,0,0,kind==='cup'?'rest':kind,kind==='cup'?-1:1,c);c.restore()}}
+drawPawStudies();
+function note(x,y,alpha,angle){ctx.save();ctx.globalAlpha*=alpha;ctx.translate(x,y);ctx.rotate(angle);oval(0,0,8,5,'#bfdbc0');line(6,0,6,-26,'#bfdbc0',4);line(6,-26,17,-20,'#bfdbc0',4);ctx.restore()}
+// In guitar-local coordinates the strings run along X. Downstroke crosses Y;
+// recovery lifts away to the bridge side instead of scrubbing back over strings.
+function guitarStrum(age){const phase=(age%1.05)/1.05,reach=18+8*amount;
+ // Paw tips start along local -Y; compensate for the guitar's -0.49 rad
+ // rotation so their screen direction stays diagonally up-right (~45°).
+ const tipAngle=Math.PI/4+.49;
+ if(phase<.32){const u=ramp(phase/.32);return {x:-54,y:-reach+2*reach*u,angle:tipAngle-.12+.24*u,scale:.76};}
+ const u=ramp((phase-.32)/.68),lift=Math.sin(u*Math.PI);
+ return {x:-54-16*lift,y:reach-2*reach*u,angle:tipAngle+.12-.24*u,scale:.76+.05*lift};}
+function theatre(age){const act=acts[state];if(!act)return;const p=musicPreview.playing?1:presence(age,act[2]);ctx.save();ctx.globalAlpha=p;const lift=(1-p)*95;
+if(state==='guitar'){
+ ctx.save();ctx.translate(340,480+lift);ctx.rotate(-.49);
+ // Approved reference: full round lower bout, soft waist, smaller upper bout.
+ // Body length / lower-bout width ≈ 1.3, neck width ≈ 15% of body width.
+ ctx.fillStyle='#edbb79';ctx.beginPath();ctx.moveTo(49,-14);
+ ctx.bezierCurveTo(47,-47,24,-65,4,-61);
+ ctx.bezierCurveTo(-19,-60,-20,-52,-42,-54);
+ ctx.bezierCurveTo(-63,-56,-66,-80,-104,-81);
+ ctx.bezierCurveTo(-143,-83,-164,-48,-164,0);
+ ctx.bezierCurveTo(-164,48,-143,83,-104,81);
+ ctx.bezierCurveTo(-66,80,-63,56,-42,54);
+ ctx.bezierCurveTo(-20,52,-19,60,4,61);
+ ctx.bezierCurveTo(24,65,47,47,49,14);ctx.closePath();ctx.fill();
+ // Straight slender neck axis, slightly tapered edges and soft heel seating.
+ ctx.fillStyle='#957254';ctx.beginPath();ctx.moveTo(17,-13);
+ ctx.quadraticCurveTo(31,-15,48,-13);ctx.lineTo(185,-10);
+ ctx.lineTo(185,10);ctx.lineTo(48,13);ctx.quadraticCurveTo(31,15,17,13);ctx.closePath();ctx.fill();
+ ctx.fillStyle='#957254';ctx.beginPath();ctx.roundRect(179,-19,48,38,9);ctx.fill();
+ for(const x of [190,213]){oval(x,-24,4.5,4.5,'#fff5db');oval(x,24,4.5,4.5,'#fff5db');}
+ oval(-24,0,30,30,'#294b3d');ctx.strokeStyle='#957254';ctx.lineWidth=2;ctx.beginPath();ctx.arc(-24,0,34,0,Math.PI*2);ctx.stroke();
+ ctx.fillStyle='#705d47';ctx.beginPath();ctx.roundRect(-112,-24,14,48,4);ctx.fill();
+ for(const x of [52,80,106,130,152,173])line(x,-11,x,11,'#d8c6a6',1.5);
+ for(const y of [-7,0,7])line(-105,y,212,y,'#fff5db',1.3);
+ // Fixed fret-hand anchor; only the other paw sweeps across the strings.
+ ctx.save();ctx.translate(103,7);ctx.scale(.73,.73);paw(0,0,-.2,'grip',-1);ctx.restore();
+ const strum=guitarStrum(age);ctx.save();ctx.translate(strum.x,strum.y);ctx.scale(strum.scale,strum.scale);paw(0,0,strum.angle,'open',1);ctx.restore();ctx.restore();
+ const phase=(age%2)/2;note(536,475-phase*50,Math.sin(phase*Math.PI),.15);
+}
+if(state==='drum'){ctx.save();ctx.translate(360,493+lift);ctx.fillStyle='#bd9278';ctx.fillRect(-98,0,196,65);oval(0,65,98,23,'#bd9278');for(let x=-75;x<90;x+=50){line(x,8,x+20,58,'#f0d8ad',4);}oval(0,0,100,30,'#eddfbe');for(const side of [-1,1]){const beat=(age*1.6+(side===1?.5:0))%1;const down=Math.pow(Math.sin(beat*Math.PI),6);const y=-70+down*53;line(side*91,y,side*43,y+24,'#c6aa7d',9);oval(side*43,y+24,9,7,'#fff5db');paw(side*94,y-2,side*.2,'grip',-side);}ctx.restore();note(533,410-((age%2)/2)*60,Math.sin((age%2)/2*Math.PI),.1);}
+if(state==='keys'){ctx.save();ctx.translate(360,503+lift);ctx.fillStyle='#94b399';ctx.beginPath();ctx.roundRect(-132,-17,264,88,18);ctx.fill();for(let i=0;i<8;i++){const pressed=i===Math.floor(age*3)%8;ctx.fillStyle=pressed?'#d4dfb7':'#fff5db';ctx.fillRect(-120+i*30,-5+(pressed?4:0),27,59-(pressed?4:0));}for(const i of [0,1,3,4,5]){ctx.fillStyle='#294b3d';ctx.fillRect(-101+i*30,-5,15,31);}for(const side of [-1,1]){const bounce=(1-Math.cos(age*6+side*Math.PI/2))*5;ctx.save();ctx.translate(side*(58+Math.sin(age*1.4)*12),-19+bounce);ctx.scale(.78,.78);paw(0,0,Math.PI,'open',side);ctx.restore();}ctx.restore();note(543,417-((age%2)/2)*55,Math.sin((age%2)/2*Math.PI),.15);}
+if(state==='fish'){const q=fishPose(age);ctx.save();ctx.globalAlpha*=1-q.escape;ctx.translate(q.x,q.y);ctx.rotate(Math.sin(age*5)*.05);ctx.fillStyle='#b5cdaa';ctx.beginPath();ctx.moveTo(-21,0);ctx.lineTo(-38,-15);ctx.quadraticCurveTo(-32,0,-38,15);ctx.closePath();ctx.fill();oval(0,0,25,13,'#b5cdaa');oval(12,-3,2.5,2.5,'#081312');ctx.restore();paw(400+q.pounce*57,548+lift-q.pounce*76,-.35*q.pounce,'open');}
+if(state==='peek'){const q=peekPose(age);for(const side of [-1,1]){ctx.save();const opening=side===1?q.peek*62:0;ctx.translate(360+side*(118+opening),520-172*q.cover+lift);ctx.rotate(side*(.08+.22*q.peek));ctx.scale(1.65,1.65);paw(0,0,0,'open',-side);ctx.restore();}}
+if(state==='rub'){const q=rubPose(age);ctx.globalAlpha=q.lift;ctx.save();ctx.translate(484+20*(1-q.lift)+q.dx,362+140*(1-q.lift)+q.dy);ctx.scale(.8,.8);paw(0,0,.12,'grip',-1);ctx.restore();}
+if(state==='wave'){const swing=Math.sin(clamp((age-.65)/2)*Math.PI*4)*.30*amount;ctx.save();ctx.translate(524,432+lift);ctx.rotate(.12+swing);const squash=Math.sin(age*6)*.025*amount;ctx.scale(1+squash,1-squash);paw(0,-12);ctx.restore()}
+if(state==='chin'){const q=chinPose(age);ctx.globalAlpha=q.lift;ctx.save();ctx.translate(520+24*(1-q.lift),502+64*(1-q.lift));ctx.scale(1+q.lean*.04,1-q.lean*.06);paw(0,0,.06,'rest',-1);ctx.restore()}
+if(state==='heart'){ctx.save();ctx.translate(360,459+lift);const beat=1+Math.sin(age*3)*.025*amount;ctx.scale(beat,beat);ctx.fillStyle='#dfa797';ctx.beginPath();ctx.moveTo(0,35);ctx.bezierCurveTo(-93,-12,-34,-64,0,-24);ctx.bezierCurveTo(34,-64,93,-12,0,35);ctx.fill();ctx.restore();paw(321,486+lift,.20,'cup',1);paw(399,486+lift,-.20,'cup',-1)}
+if(state==='bubble'){ctx.save();ctx.translate(-62,0);const withdraw=ramp((age-3.3)/.7);const stickY=465+lift+withdraw*70;ctx.globalAlpha=p*(1-withdraw);line(422,stickY+35,422,stickY-59,'#bdcfac',8);ctx.strokeStyle='#bdcfac';ctx.lineWidth=5;ctx.beginPath();ctx.arc(422,stickY-78,19,0,Math.PI*2);ctx.stroke();paw(422,stickY+8,0,'grip');ctx.globalAlpha=p;
+if(age>1&&age<5.35){const grow=ramp((age-1)/2.1),fly=ramp((age-3.1)/2.25);const x=422+fly*42,y=387-fly*173,r=8+grow*43;ctx.fillStyle='#b7dcca18';ctx.strokeStyle='#bfdfd5';ctx.lineWidth=2.5;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.strokeStyle='#fff5dba0';ctx.beginPath();ctx.arc(x,y,r*.77,3.5,4.6);ctx.stroke()}
+if(age>=5.35&&age<5.8){const burst=(age-5.35)/.45;ctx.globalAlpha=p*(1-burst);for(let i=0;i<7;i++){const a=i*Math.PI*2/7;line(464+Math.cos(a)*(50+burst*15),214+Math.sin(a)*(50+burst*15),464+Math.cos(a)*(56+burst*35),214+Math.sin(a)*(56+burst*35),'#bfdfd5',3)}}ctx.restore();}
+if(state==='shaker'){for(const side of [-1,1]){const swing=Math.sin(age*7+side*Math.PI/2)*.28*amount;ctx.save();ctx.translate(360+side*137,481+lift);ctx.rotate(side*.20+swing);line(0,44,0,-51,'#c6aa7d',12);oval(0,-67,25,34,side===1?'#b5cdaa':'#dec095');line(-20,-68,20,-68,'#fff5db',5);paw(0,13,0,'grip',-side);ctx.restore();const phase=((age+side*.55)%1.9)/1.9;note(360+side*(192+phase*12),355-phase*103,Math.sin(phase*Math.PI),side*.15)}}
+ctx.restore()}
+function drawMusicCover(now){
+ ctx.fillStyle='#17332e';ctx.fillRect(0,0,720,720);ctx.textAlign='center';ctx.fillStyle='#fff5db';ctx.font='28px sans-serif';ctx.fillText('示例歌曲 · 模拟播放',360,139);
+ ctx.save();ctx.translate(360,340);ctx.rotate((now-musicPreview.started)/22000);oval(0,0,137,137,'#b5cdaa');oval(0,0,105,105,'#294b3d');oval(0,0,70,70,'#d5b590');oval(0,0,18,18,'#17332e');line(-104,-53,104,-53,'#fff5db',4);ctx.restore();
+ ctx.fillStyle='#b5cdaa';ctx.font='21px sans-serif';ctx.fillText('封面占位 · 无真实歌词',360,547);line(227,585,493,585,'#476658',5);line(227,585,227+266*clamp((now-musicPreview.started)/60000),585,'#fff5db',5);
+}
+function frame(now){const dt=Math.min((now-last)/1000,.05);last=now;if(sequenceStart!==null){const age=now-sequenceStart;let index=0;steps.forEach((s,i)=>{if(age>=s[1])index=i});if(state!==steps[index][0])setState(steps[index][0],'internal');document.querySelectorAll('[data-step]').forEach(s=>s.classList.toggle('active',Number(s.dataset.step)===index));if(age>=18000)stopDemo()}
+musicTick(now);
+let elapsed=(now-stateAt)/1000; if(state==='wake'&&elapsed>.8){setState('listen','internal');elapsed=0}
+if(!musicPreview.playing&&acts[state]&&elapsed>=acts[state][2]){setState(state==='rub'?'sleepy':'idle','internal');elapsed=0}
+idleTick(now);elapsed=(now-stateAt)/1000;
+const t=now/1000;const syllable=Math.max(0,Math.sin(elapsed*11))*Math.max(0,Math.sin(elapsed*2.2));const energy=state==='speak'?syllable:0;
+if(audio&&gain){gain.gain.setTargetAtTime(document.querySelector('#sound').checked&&!document.hidden?energy*.025:0,audio.currentTime,.025);osc.frequency.setTargetAtTime(190+energy*75,audio.currentTime,.03)}
+let target={...restingEye,x:0,y:Math.sin(t*1.3)*1.8*amount,tilt:.025,smile:0,asym:0,blush:0,roll:0,yaw:0};
+if(state==='idle'){if(now>idleLookAt){idleLookX=(Math.random()<.5?-1:1)*11;idleLookUntil=now+1600;idleLookAt=now+10000+Math.random()*12000}if(now<idleLookUntil)target.x=idleLookX*amount;target.h+=Math.sin(t*1.3)*1.5*amount}
+if(state==='wake'){target.h*=1.18;target.y=-6}
+if(state==='listen'){target.h*=1.07;target.y=0;target.tilt=.015}
+if(state==='think'){target.x=(elapsed>2.5?9+Math.sin((elapsed-2.5)*.9)*9:9)*amount;target.y=-15*amount;target.h*=.88;target.asym=9*amount;target.tilt=.025}
+if(state==='speak'){target.h*=1+energy*.10*amount;target.y-=energy*5*amount;target.tilt=.025}
+if(state==='happy'){Object.assign(target,happyEye);target.y=-9+Math.sin(t*2)*1.5*amount;target.blush=.24*Math.max(0,1-elapsed/3)}
+if(state==='confused'){target.asym=25*amount;target.tilt=-.12*amount;target.x=8*amount;target.h*=.8}
+if(state==='sleepy'){target.h=25;target.y=9;target.tilt=.03}
+if(acts[state]){const p=presence(elapsed,acts[state][2]);if(state==='wave'){target.smile=.8*p;target.y=-4*p}if(state==='chin'){target.x=11*p;target.y=-8*p;target.asym=13*p;target.h-=12*p}if(state==='heart'){target.smile=p;target.y=-9*p;target.blush=.22*p}if(state==='shaker'){target.smile=.8*p;target.y=-7*p+Math.sin(elapsed*7)*3*amount*p;target.tilt+=Math.sin(elapsed*3.5)*.04*amount*p}if(state==='bubble'){const flying=ramp((elapsed-3.1)/2.25);target.x=(elapsed>5.8?0:12+flying*9)*p;target.y=-flying*19*p;if(elapsed>1&&elapsed<3.1)target.h-=24*p;if(elapsed>=5.35&&elapsed<5.8){target.h+=22;target.asym=8}}}
+// Use the exact happy silhouette at full presence, easing in/out with the act.
+if(['wave','shaker','heart','drum','keys','guitar'].includes(state)){const p=musicPreview.playing?1:presence(elapsed,acts[state][2]);target.smile=happyEye.smile*p;target.h=restingEye.h+(happyEye.h-restingEye.h)*p;if(['drum','keys','guitar'].includes(state))target.y=(-7+Math.sin(elapsed*5)*2*amount)*p;}
+if(state==='chin'){const q=chinPose(elapsed);target.x=16*q.lean;target.y=8*q.lean;target.roll=.14*q.lean;target.asym=-5*q.lean;target.h=restingEye.h-8*q.lean;target.tilt=.015;}
+// One face turn drives translation, spacing and relative eye size together.
+if(state==='think'){target.x=(34+Math.sin(Math.max(0,elapsed-2.5)*.7)*6)*(.6+amount*.4);target.y=-20;target.roll=-.055;}
+if(state==='chin'){const q=chinPose(elapsed);target.x=32*q.lean;}
+if(state==='fish'){const q=fishPose(elapsed),p=presence(elapsed,acts.fish[2]);target.x=Math.max(-35,Math.min(35,(q.x-360)*.2))*p;target.y=12*p;target.h=restingEye.h-24*q.pounce;}
+if(state==='peek'){const q=peekPose(elapsed);target.h=restingEye.h+(32-restingEye.h)*q.cover+(happyEye.h-restingEye.h)*q.joy;target.smile=q.joy;target.asym=35*q.peek;target.x=0;target.y=0;}
+if(now<gaze.until&&!['chin','fish','peek','bubble'].includes(state)){target.x+=gaze.x;target.y+=gaze.y}
+target.yaw=Math.max(-1,Math.min(1,target.x/48));
+if(state==='rub'){const q=rubPose(elapsed);target.h=restingEye.h+(25-restingEye.h)*q.close;target.y=9*q.close;target.x=0;target.yaw=0;target.roll=0;target.asym=0;target.smile=0;}
+// Gaze settles before the eyelids. Input states get a faster response.
+Object.keys(pose).forEach(k=>{const position=k==='x'||k==='y';const rate=state==='wake'||state==='listen'?22:position?14:elapsed<.10?2:7;pose[k]+=(target[k]-pose[k])*(1-Math.exp(-dt*rate))});
+if(now>blinkAt&&state!=='wake'&&state!=='happy'){blinkStart=now;blinkAt=now+3500+Math.random()*4800}
+// Close in 65 ms, hold for 25 ms, reopen gently over 190 ms.
+const phase=now-blinkStart;const smooth=v=>v*v*(3-2*v);let blink=1;if(phase>=0&&phase<65)blink=1-.95*smooth(phase/65);else if(phase<90&&phase>=65)blink=.05;else if(phase>=90&&phase<280)blink=.05+.95*smooth((phase-90)/190);
+ctx.clearRect(0,0,720,720);ctx.fillStyle='#081312';ctx.fillRect(0,0,720,720);
+if(musicPreview.playing&&musicPreview.view==='cover'){drawMusicCover(now);requestAnimationFrame(frame);return;}
+// Closed smiling eyes should not be compressed by an unrelated random blink.
+blink=blink+(1-blink)*pose.smile;
+ctx.save();ctx.translate(360+pose.x,348+pose.y);ctx.rotate(pose.roll);
+for(const side of [-1,1]){const perspective=eyePerspective(side,pose.yaw);const h=Math.max(6,(pose.h+side*pose.asym)*blink*perspective.height);eye(perspective.x,side*pose.asym*.25,pose.w*perspective.width,h,side*pose.tilt,pose.smile,side);}
+ctx.restore();
+if(pose.blush>.001){ctx.globalAlpha=pose.blush;ctx.fillStyle='#eda88d';for(const side of [-1,1]){ctx.beginPath();ctx.ellipse(360+side*139+pose.x,411+pose.y,21,7,0,0,Math.PI*2);ctx.fill()}ctx.globalAlpha=1}
+theatre(elapsed);
+requestAnimationFrame(frame)}
+setState('idle');requestAnimationFrame(frame);
+</script>
+</html>
