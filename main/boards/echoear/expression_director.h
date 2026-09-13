@@ -29,6 +29,8 @@ struct ExpressionRenderModel {
     // scene to own the display. Higher-priority interaction states leave this
     // false so they can temporarily cover the music UI.
     bool music_scene_visible = false;
+    // Optional trial pose: -1 legacy resources, 0 capsule eyes, 1 greeting paw.
+    int character_pose = -1;
 
     bool operator==(const ExpressionRenderModel& other) const;
 };

@@ -8,6 +8,7 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/semphr.h>
 #include "mmap_generate_emoji_normal.h"
 #include "gfx.h"
 #include <atomic>
@@ -35,7 +36,7 @@ public:
     void setEyes(int aaf, bool repeat, int fps);
     void stopEyes();
 #if CONFIG_ECHOEAR_CHARACTER_PREVIEW
-    bool BeginCharacterPreview();
+    bool BeginCharacterPreview(CharacterPreview initial = CharacterPreview::kEyes, bool guitar_cache = true);
     bool DrawCharacterPreview(CharacterPreview scene, float seconds);
     void EndCharacterPreview();
 #endif
@@ -148,6 +149,17 @@ private:
     void ApplyExpressionTestFrame(const char* name, const ExpressionRenderModel& render_model);
     void RunExpressionTest();
     static void ExpressionTestTask(void* arg);
+#if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+    static void LiveCharacterTask(void* arg);
+    void StopLiveCharacter();
+    SemaphoreHandle_t live_mutex_ = nullptr;
+    TaskHandle_t live_task_ = nullptr;
+    std::atomic<bool> live_shutdown_{false};
+    std::atomic<bool> live_failed_{false};
+    int live_pose_ = -1; // protected by live_mutex_
+    bool live_owns_preview_ = false;
+    int64_t live_started_us_ = 0;
+#endif
 #if CONFIG_ECHOEAR_CHARACTER_TEST_SERIAL
     static void CharacterSerialTask(void* arg);
 #endif

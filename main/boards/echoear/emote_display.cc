@@ -1100,17 +1100,17 @@ void EmoteEngine::stopEyes()
 }
 
 #if CONFIG_ECHOEAR_CHARACTER_PREVIEW
-bool EmoteEngine::BeginCharacterPreview()
+bool EmoteEngine::BeginCharacterPreview(CharacterPreview initial, bool guitar_cache)
 {
     if (!engine_handle_ || IsMusicSceneActive()) return false;
     character_front_ = static_cast<uint8_t*>(heap_caps_malloc(kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     character_back_ = static_cast<uint8_t*>(heap_caps_malloc(kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!character_front_ || !character_back_) { EndCharacterPreview(); return false; }
-    character_guitar_base_ = static_cast<uint8_t*>(heap_caps_malloc(kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    character_guitar_base_ = guitar_cache ? static_cast<uint8_t*>(heap_caps_malloc(kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) : nullptr;
     if (character_guitar_base_) RenderGuitarBase(character_guitar_base_, kCharacterBytes);
     ESP_LOGI(TAG, "Character preview guitar_cache=%d cache_bytes=%u", character_guitar_base_ != nullptr,
              static_cast<unsigned>(character_guitar_base_ ? kCharacterBytes : 0));
-    RenderCharacterPreview(character_front_, kCharacterBytes, CharacterPreview::kEyes, 1);
+    RenderCharacterPreview(character_front_, kCharacterBytes, initial, 0);
     character_descriptor_ = {};
     character_descriptor_.header.magic = C_ARRAY_HEADER_MAGIC;
     character_descriptor_.header.cf = GFX_COLOR_FORMAT_RGB565A8;
@@ -1219,6 +1219,15 @@ void EmoteEngine::OnFlush(gfx_handle_t handle, int x_start, int y_start,
 EmoteDisplay::EmoteDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t panel_io)
 {
     InitializeEngine(panel, panel_io);
+#if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+    live_mutex_ = xSemaphoreCreateMutex();
+    if (!live_mutex_ || xTaskCreatePinnedToCore(LiveCharacterTask, "character_live", 16 * 1024,
+                                               this, 1, &live_task_, 0) != pdPASS) {
+        live_task_ = nullptr;
+        live_failed_ = true;
+        ESP_LOGE(TAG, "Character live unavailable; using legacy expressions");
+    }
+#endif
     InitializeDirector();
 #if CONFIG_ECHOEAR_CHARACTER_TEST_SERIAL
     if (xTaskCreate(CharacterSerialTask, "character_serial", 4096, this, 1, nullptr) != pdPASS) {
@@ -1227,7 +1236,70 @@ EmoteDisplay::EmoteDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle
 #endif
 }
 
-EmoteDisplay::~EmoteDisplay() = default;
+EmoteDisplay::~EmoteDisplay()
+{
+#if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+    live_shutdown_ = true;
+    // The display is normally board-lifetime. Stop rendering before freeing
+    // its buffers if teardown is requested.
+    while (live_task_ && live_shutdown_) vTaskDelay(pdMS_TO_TICKS(10));
+    if (live_mutex_) vSemaphoreDelete(live_mutex_);
+#endif
+}
+
+#if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+void EmoteDisplay::StopLiveCharacter()
+{
+    if (!live_mutex_) return;
+    xSemaphoreTake(live_mutex_, portMAX_DELAY);
+    live_pose_ = -1;
+    if (live_owns_preview_) {
+        engine_->EndCharacterPreview();
+        live_owns_preview_ = false;
+        ESP_LOGI(TAG, "Character live released");
+    }
+    xSemaphoreGive(live_mutex_);
+}
+
+void EmoteDisplay::LiveCharacterTask(void* arg)
+{
+    auto* self = static_cast<EmoteDisplay*>(arg);
+    while (!self->live_shutdown_) {
+        const int64_t frame_start = esp_timer_get_time();
+        bool failed = false;
+        xSemaphoreTake(self->live_mutex_, portMAX_DELAY);
+        if (self->live_pose_ >= 0 && !self->expression_test_running_ && !self->live_failed_) {
+            const auto scene = self->live_pose_ == 0 ? CharacterPreview::kEyes : CharacterPreview::kWave;
+            if (!self->live_owns_preview_) {
+                self->live_owns_preview_ = self->engine_->BeginCharacterPreview(scene, false);
+                failed = !self->live_owns_preview_;
+            } else {
+                failed = !self->engine_->DrawCharacterPreview(scene,
+                    (esp_timer_get_time() - self->live_started_us_) / 1000000.f);
+            }
+            if (failed) {
+                self->live_failed_ = true;
+                self->live_pose_ = -1;
+                self->engine_->EndCharacterPreview();
+                self->live_owns_preview_ = false;
+            }
+        }
+        xSemaphoreGive(self->live_mutex_);
+        if (failed) {
+            ESP_LOGE(TAG, "Character live failed; restoring legacy expressions");
+            Application::GetInstance().Schedule([self]() {
+                if (self->director_) self->director_->ForceRender();
+            });
+        }
+        // Cap to 20 submissions/s and never queue missed animation frames.
+        const int64_t remaining = 50000 - (esp_timer_get_time() - frame_start);
+        vTaskDelay(std::max<TickType_t>(1, pdMS_TO_TICKS(std::max<int64_t>(1, remaining/1000))));
+    }
+    self->StopLiveCharacter();
+    self->live_shutdown_ = false;
+    vTaskDelete(nullptr);
+}
+#endif
 
 void EmoteDisplay::SetBehavior(const DisplayBehaviorRequest& request)
 {
@@ -1336,6 +1408,9 @@ void EmoteDisplay::SetChatMessage(const char* role, const char* content)
 
 void EmoteDisplay::EnterMusicScene(const MusicTrackInfo& track)
 {
+#if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+    StopLiveCharacter();
+#endif
 #if CONFIG_ECHOEAR_CHARACTER_PREVIEW
     character_test_cancelled_ = true;
 #endif
@@ -1528,6 +1603,10 @@ bool EmoteDisplay::StartExpressionTest()
         return false;
     }
 
+#if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+    StopLiveCharacter();
+#endif
+
     character_test_cancelled_ = false;
     BaseType_t result = xTaskCreatePinnedToCore(
         ExpressionTestTask,
@@ -1548,6 +1627,9 @@ bool EmoteDisplay::StartExpressionTest()
     if (result != pdPASS) {
         expression_test_running_ = false;
         ESP_LOGE(TAG, "Failed to create expression self-test task");
+#if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+        if (director_) director_->ForceRender();
+#endif
         return false;
     }
     return true;
@@ -1665,6 +1747,22 @@ void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
     if (!engine_) {
         return;
     }
+
+#if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+    if (live_mutex_ && !live_failed_ && !expression_test_running_ &&
+        !engine_->IsMusicSceneActive() && render_model.character_pose >= 0 &&
+        render_model.character_pose <= 1 && render_model.text.empty()) {
+        xSemaphoreTake(live_mutex_, portMAX_DELAY);
+        if (live_pose_ != render_model.character_pose) {
+            live_pose_ = render_model.character_pose;
+            live_started_us_ = esp_timer_get_time();
+            ESP_LOGI(TAG, "Character live pose=%d", live_pose_);
+        }
+        xSemaphoreGive(live_mutex_);
+        return;
+    }
+    StopLiveCharacter();
+#endif
 
 #if CONFIG_ECHOEAR_MUSIC_SCENE
     if (engine_->IsMusicSceneActive()) {

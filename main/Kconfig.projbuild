@@ -339,6 +339,15 @@ config ECHOEAR_CHARACTER_PREVIEW
         during the test only. Disable to restore
         the legacy asset self-test. Not the production character renderer.
 
+config ECHOEAR_CHARACTER_LIVE_TRIAL
+    bool "Trial capsule idle eyes and wake greeting paw"
+    default n
+    depends on ECHOEAR_CHARACTER_PREVIEW
+    help
+        Replace only idle micro motions and wake acknowledgement with the
+        experimental renderer. Listening, speech, sleep, errors and music
+        retain their existing displays. Disable to restore all legacy poses.
+
 config ECHOEAR_CHARACTER_TEST_SERIAL
     bool "Enable USB serial character test commands (debug only)"
     default n

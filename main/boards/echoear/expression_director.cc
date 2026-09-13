@@ -39,7 +39,8 @@ bool ExpressionRenderModel::operator==(const ExpressionRenderModel& other) const
            icon_asset_id == other.icon_asset_id &&
            ui_mode == other.ui_mode &&
            text == other.text &&
-           music_scene_visible == other.music_scene_visible;
+           music_scene_visible == other.music_scene_visible &&
+           character_pose == other.character_pose;
 }
 
 ExpressionDirector::ExpressionDirector(RenderCallback render_callback)
@@ -242,6 +243,7 @@ void ExpressionDirector::Recompute(const char* reason)
             selected_source = "timer_sleep";
         } else if (idle_motion_.has_value()) {
             next_render_model = idle_motion_->render_model;
+            next_render_model.character_pose = 0;
             selected_source = idle_motion_->name;
             selected_expires_at_us = idle_motion_->expires_at_us;
         }
@@ -250,6 +252,9 @@ void ExpressionDirector::Recompute(const char* reason)
     if (cloud_emotion_.has_value() && kPriorityEmotion > next_priority) {
         next_priority = kPriorityEmotion;
         next_render_model = cloud_emotion_->render_model;
+        if (base_behavior_.behavior == DisplayBehavior::kIdle &&
+            (cloud_emotion_->name == "neutral" || cloud_emotion_->name == "idle" ||
+             cloud_emotion_->name == "relaxed")) next_render_model.character_pose = 0;
         selected_source = "cloud";
         selected_expires_at_us = cloud_emotion_->expires_at_us;
     }
@@ -564,10 +569,10 @@ ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavio
                 MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kIdle:
         return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive, text};
+                MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive, text, false, 0};
     case DisplayBehavior::kWakeAcknowledged:
         return {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 20,
-                MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text};
+                MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text, false, 1};
     case DisplayBehavior::kListening:
         return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text};
