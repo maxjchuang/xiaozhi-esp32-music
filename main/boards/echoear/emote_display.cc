@@ -13,6 +13,9 @@
 #include <freertos/task.h>
 #include <sys/time.h>
 #include <time.h>
+#if CONFIG_ECHOEAR_CHARACTER_TEST_SERIAL
+#include "driver/usb_serial_jtag.h"
+#endif
 
 #include "display/lcd_display.h"
 #include "application.h"
@@ -1217,6 +1220,11 @@ EmoteDisplay::EmoteDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle
 {
     InitializeEngine(panel, panel_io);
     InitializeDirector();
+#if CONFIG_ECHOEAR_CHARACTER_TEST_SERIAL
+    if (xTaskCreate(CharacterSerialTask, "character_serial", 4096, this, 1, nullptr) != pdPASS) {
+        ESP_LOGE(TAG, "Character serial task creation failed");
+    }
+#endif
 }
 
 EmoteDisplay::~EmoteDisplay() = default;
@@ -1461,6 +1469,45 @@ void EmoteDisplay::InitializeDirector()
 #endif
 }
 
+#if CONFIG_ECHOEAR_CHARACTER_TEST_SERIAL
+void EmoteDisplay::CharacterSerialTask(void* arg)
+{
+    auto* self = static_cast<EmoteDisplay*>(arg);
+    usb_serial_jtag_driver_config_t config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    if (!usb_serial_jtag_is_driver_installed() && usb_serial_jtag_driver_install(&config) != ESP_OK) {
+        ESP_LOGE(TAG, "Character serial driver installation failed");
+        vTaskDelete(nullptr);
+        return;
+    }
+    ESP_LOGI(TAG, "Character serial ready: character-test start/status/cancel");
+    char line[64]; size_t length = 0; bool overflow = false;
+    for (;;) {
+        char ch;
+        if (usb_serial_jtag_read_bytes(&ch, 1, pdMS_TO_TICKS(100)) != 1) continue;
+        if (ch == '\r') continue;
+        if (ch != '\n') {
+            if (length < sizeof(line)-1) line[length++] = ch;
+            else overflow = true;
+            continue;
+        }
+        line[length] = 0;
+        if (!overflow && std::strcmp(line, "character-test start") == 0) {
+            Application::GetInstance().Schedule([self]() {
+                const bool accepted = self->StartExpressionTest();
+                ESP_LOGI(TAG, "Character serial start accepted=%d", accepted);
+            });
+        } else if (!overflow && std::strcmp(line, "character-test cancel") == 0) {
+            Application::GetInstance().Schedule([self]() { self->CancelExpressionTest(); });
+        } else if (!overflow && std::strcmp(line, "character-test status") == 0) {
+            ESP_LOGI(TAG, "Character serial status running=%d", self->expression_test_running_.load());
+        } else {
+            ESP_LOGW(TAG, "Character serial rejected command");
+        }
+        length = 0; overflow = false;
+    }
+}
+#endif
+
 void EmoteDisplay::CancelExpressionTest()
 {
 #if CONFIG_ECHOEAR_CHARACTER_PREVIEW
@@ -1517,6 +1564,8 @@ void EmoteDisplay::RunExpressionTest()
 #if CONFIG_ECHOEAR_CHARACTER_PREVIEW
     const size_t before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     const bool ready = engine_->BeginCharacterPreview();
+    bool failed = !ready;
+    unsigned completed = 0;
     ESP_LOGI(TAG, "Character preview begin ready=%d buffer_bytes=%u spiram_before=%u", ready,
              static_cast<unsigned>(kCharacterBytes * 2), static_cast<unsigned>(before));
     if (ready) {
@@ -1528,7 +1577,7 @@ void EmoteDisplay::RunExpressionTest()
             unsigned frames = 0, slow = 0;
             while (!character_test_cancelled_ && esp_timer_get_time() - start < 6000000) {
                 const int64_t frame_start = esp_timer_get_time();
-                if (!engine_->DrawCharacterPreview(scene, (frame_start - start) / 1000000.f)) break;
+                if (!engine_->DrawCharacterPreview(scene, (frame_start - start) / 1000000.f)) { failed = true; break; }
                 const int64_t cost = esp_timer_get_time() - frame_start;
                 total += cost; maximum = std::max(maximum, cost); frames++; slow += cost > 33333;
                 // Drop missed deadlines rather than accumulating queued frames.
@@ -1537,11 +1586,14 @@ void EmoteDisplay::RunExpressionTest()
             ESP_LOGI(TAG, "Character preview scene=%d frames=%u elapsed_ms=%u avg_us=%u max_us=%u over_budget=%u stack_free=%u",
                      static_cast<int>(scene), frames, static_cast<unsigned>((esp_timer_get_time()-start)/1000), static_cast<unsigned>(frames ? total / frames : 0),
                      static_cast<unsigned>(maximum), slow, static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+            if (failed) break;
+            if (!character_test_cancelled_ && frames && esp_timer_get_time() - start >= 6000000) ++completed;
         }
     }
     engine_->EndCharacterPreview();
     ESP_LOGI(TAG, "Character preview end cancelled=%d spiram_after=%u", character_test_cancelled_.load(),
              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+    ESP_LOGI(TAG, "Character preview result completed=%u failed=%d", completed, failed);
     Application::GetInstance().Schedule([this]() {
         expression_test_running_ = false;
         if (director_) director_->ForceRender();

@@ -148,6 +148,9 @@ private:
     void ApplyExpressionTestFrame(const char* name, const ExpressionRenderModel& render_model);
     void RunExpressionTest();
     static void ExpressionTestTask(void* arg);
+#if CONFIG_ECHOEAR_CHARACTER_TEST_SERIAL
+    static void CharacterSerialTask(void* arg);
+#endif
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 

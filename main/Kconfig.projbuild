@@ -335,8 +335,18 @@ config ECHOEAR_CHARACTER_PREVIEW
     help
         Replace only the expression self-test with capsule eyes, waving and
         guitar previews. Normal expressions remain unchanged. Uses two PSRAM
-        RGB565A8 frames (about 760 KiB) during the test only. Disable to restore
+        RGB565A8 frames plus an optional static cache (about 1.11 MiB total)
+        during the test only. Disable to restore
         the legacy asset self-test. Not the production character renderer.
+
+config ECHOEAR_CHARACTER_TEST_SERIAL
+    bool "Enable USB serial character test commands (debug only)"
+    default n
+    depends on ECHOEAR_CHARACTER_PREVIEW && ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
+    help
+        Accept only character-test start/status/cancel commands on USB serial.
+        No shell, network access, or automatic startup tests. Keep disabled in
+        release builds. Host automation supplies bounded rounds and timeouts.
 
 config ECHOEAR_IDLE_MICRO_MOTIONS
     bool "Enable EchoEar idle micro motions"
