@@ -307,6 +307,7 @@ void Application::DismissAlert()
 
 void Application::ToggleChatState()
 {
+    Board::GetInstance().GetDisplay()->CancelExpressionTest();
     if (device_state_ == kDeviceStateActivating)
     {
         SetDeviceState(kDeviceStateIdle);
@@ -363,6 +364,7 @@ void Application::ToggleChatState()
 
 void Application::StartListening()
 {
+    Board::GetInstance().GetDisplay()->CancelExpressionTest();
     if (device_state_ == kDeviceStateActivating)
     {
         SetDeviceState(kDeviceStateIdle);

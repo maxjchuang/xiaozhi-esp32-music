@@ -13,6 +13,7 @@
 #include <atomic>
 #include <array>
 #include <cstdint>
+#include "character_preview.h"
 
 namespace anim {
 
@@ -33,6 +34,11 @@ public:
 
     void setEyes(int aaf, bool repeat, int fps);
     void stopEyes();
+#if CONFIG_ECHOEAR_CHARACTER_PREVIEW
+    bool BeginCharacterPreview();
+    bool DrawCharacterPreview(CharacterPreview scene, float seconds);
+    void EndCharacterPreview();
+#endif
     
     void Lock();
     void Unlock();
@@ -59,6 +65,13 @@ public:
 
 private:
     gfx_handle_t engine_handle_;
+#if CONFIG_ECHOEAR_CHARACTER_PREVIEW
+    gfx_obj_t* character_image_ = nullptr;
+    uint8_t* character_front_ = nullptr;
+    uint8_t* character_back_ = nullptr;
+    uint8_t* character_guitar_base_ = nullptr;
+    gfx_image_dsc_t character_descriptor_{};
+#endif
     mmap_assets_handle_t assets_handle_;
     uint8_t* music_background_data_ = nullptr;
     uint8_t* music_disc_source_ = nullptr;
@@ -121,6 +134,7 @@ public:
     virtual void ExitMusicScene() override;
     virtual bool SupportsExpressionTest() const override { return true; }
     virtual bool StartExpressionTest() override;
+    void CancelExpressionTest() override;
     
     anim::EmoteEngine* GetEngine()
     {
@@ -140,6 +154,7 @@ private:
     std::unique_ptr<anim::EmoteEngine> engine_;
     std::unique_ptr<anim::ExpressionDirector> director_;
     std::atomic<bool> expression_test_running_{false};
+    std::atomic<bool> character_test_cancelled_{false};
     // Suppress stale speaking/listening callbacks during the short hand-off
     // between EnterMusicScene() and the first authoritative music behavior.
     std::atomic<bool> music_scene_behavior_ready_{false};

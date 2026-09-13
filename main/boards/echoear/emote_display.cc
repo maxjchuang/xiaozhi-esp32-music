@@ -383,6 +383,9 @@ EmoteEngine::EmoteEngine(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t
 
 EmoteEngine::~EmoteEngine()
 {
+#if CONFIG_ECHOEAR_CHARACTER_PREVIEW
+    EndCharacterPreview();
+#endif
     if (music_fallback_timer_) {
         esp_timer_stop(music_fallback_timer_);
         esp_timer_delete(music_fallback_timer_);
@@ -1093,6 +1096,76 @@ void EmoteEngine::stopEyes()
     // Implementation if needed
 }
 
+#if CONFIG_ECHOEAR_CHARACTER_PREVIEW
+bool EmoteEngine::BeginCharacterPreview()
+{
+    if (!engine_handle_ || IsMusicSceneActive()) return false;
+    character_front_ = static_cast<uint8_t*>(heap_caps_malloc(kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    character_back_ = static_cast<uint8_t*>(heap_caps_malloc(kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!character_front_ || !character_back_) { EndCharacterPreview(); return false; }
+    character_guitar_base_ = static_cast<uint8_t*>(heap_caps_malloc(kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (character_guitar_base_) RenderGuitarBase(character_guitar_base_, kCharacterBytes);
+    ESP_LOGI(TAG, "Character preview guitar_cache=%d cache_bytes=%u", character_guitar_base_ != nullptr,
+             static_cast<unsigned>(character_guitar_base_ ? kCharacterBytes : 0));
+    RenderCharacterPreview(character_front_, kCharacterBytes, CharacterPreview::kEyes, 1);
+    character_descriptor_ = {};
+    character_descriptor_.header.magic = C_ARRAY_HEADER_MAGIC;
+    character_descriptor_.header.cf = GFX_COLOR_FORMAT_RGB565A8;
+    character_descriptor_.header.w = kCharacterSize;
+    character_descriptor_.header.h = kCharacterSize;
+    character_descriptor_.header.stride = kCharacterSize * 2;
+    character_descriptor_.data_size = kCharacterBytes;
+    character_descriptor_.data = character_front_;
+    Lock();
+    character_image_ = gfx_img_create(engine_handle_);
+    if (character_image_) {
+        gfx_img_set_src(character_image_, &character_descriptor_);
+        gfx_obj_align(character_image_, GFX_ALIGN_TOP_LEFT, 0, 0);
+        gfx_anim_stop(obj_anim_eye);
+        gfx_obj_set_visible(obj_anim_eye, false);
+        SetUIDisplayMode(UIDisplayMode::SHOW_NONE);
+    }
+    Unlock();
+    if (!character_image_) { EndCharacterPreview(); return false; }
+    return true;
+}
+
+bool EmoteEngine::DrawCharacterPreview(CharacterPreview scene, float seconds)
+{
+    if (!character_image_ || !character_back_) return false;
+    // Rasterize off-lock; graphics never reads the back buffer. Swap only when
+    // the graphics task releases its lock, matching the music disc discipline.
+    const bool rendered = scene == CharacterPreview::kGuitar && character_guitar_base_
+        ? RenderCachedGuitar(character_back_, kCharacterBytes, character_guitar_base_, kCharacterBytes, seconds)
+        : RenderCharacterPreview(character_back_, kCharacterBytes, scene, seconds);
+    if (!rendered) return false;
+    Lock();
+    std::swap(character_front_, character_back_);
+    character_descriptor_.data = character_front_;
+    character_image_->is_dirty = true;
+    Unlock();
+    return true;
+}
+
+void EmoteEngine::EndCharacterPreview()
+{
+    if (engine_handle_) {
+        Lock();
+        if (character_image_) {
+            gfx_obj_delete(character_image_);
+            character_image_ = nullptr;
+            gfx_obj_set_visible(obj_anim_eye, !IsMusicOverlayVisible());
+        }
+        Unlock();
+    }
+    heap_caps_free(character_front_); heap_caps_free(character_back_);
+    heap_caps_free(character_guitar_base_);
+    character_guitar_base_ = nullptr;
+    character_front_ = character_back_ = nullptr;
+    character_descriptor_ = {};
+}
+#endif
+
 void EmoteEngine::Lock()
 {
     if (engine_handle_) {
@@ -1150,6 +1223,13 @@ EmoteDisplay::~EmoteDisplay() = default;
 
 void EmoteDisplay::SetBehavior(const DisplayBehaviorRequest& request)
 {
+#if CONFIG_ECHOEAR_CHARACTER_PREVIEW
+    if (request.behavior == DisplayBehavior::kWakeAcknowledged ||
+        request.behavior == DisplayBehavior::kFatalError ||
+        request.source == DisplayBehaviorSource::kMusic) {
+        character_test_cancelled_ = true;
+    }
+#endif
     if (!director_) {
         return;
     }
@@ -1248,6 +1328,9 @@ void EmoteDisplay::SetChatMessage(const char* role, const char* content)
 
 void EmoteDisplay::EnterMusicScene(const MusicTrackInfo& track)
 {
+#if CONFIG_ECHOEAR_CHARACTER_PREVIEW
+    character_test_cancelled_ = true;
+#endif
 #if CONFIG_ECHOEAR_MUSIC_SCENE
     if (engine_) {
         if (!engine_->IsMusicSceneActive()) {
@@ -1378,19 +1461,41 @@ void EmoteDisplay::InitializeDirector()
 #endif
 }
 
+void EmoteDisplay::CancelExpressionTest()
+{
+#if CONFIG_ECHOEAR_CHARACTER_PREVIEW
+    if (expression_test_running_) {
+        ESP_LOGI(TAG, "Character preview cancel: explicit interaction");
+        character_test_cancelled_ = true;
+    }
+#endif
+}
+
 bool EmoteDisplay::StartExpressionTest()
 {
+#if CONFIG_ECHOEAR_CHARACTER_PREVIEW
+    if (!engine_ || engine_->IsMusicSceneActive()) return false;
+#endif
     bool expected = false;
     if (!expression_test_running_.compare_exchange_strong(expected, true)) {
         return false;
     }
 
+    character_test_cancelled_ = false;
     BaseType_t result = xTaskCreatePinnedToCore(
         ExpressionTestTask,
         "expression_test",
+#if CONFIG_ECHOEAR_CHARACTER_PREVIEW
+        16 * 1024,
+#else
         4 * 1024,
+#endif
         this,
+#if CONFIG_ECHOEAR_CHARACTER_PREVIEW
+        1,
+#else
         4,
+#endif
         nullptr,
         0);
     if (result != pdPASS) {
@@ -1409,6 +1514,40 @@ void EmoteDisplay::ExpressionTestTask(void* arg)
 
 void EmoteDisplay::RunExpressionTest()
 {
+#if CONFIG_ECHOEAR_CHARACTER_PREVIEW
+    const size_t before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    const bool ready = engine_->BeginCharacterPreview();
+    ESP_LOGI(TAG, "Character preview begin ready=%d buffer_bytes=%u spiram_before=%u", ready,
+             static_cast<unsigned>(kCharacterBytes * 2), static_cast<unsigned>(before));
+    if (ready) {
+        const CharacterPreview scenes[] = {CharacterPreview::kEyes, CharacterPreview::kWave, CharacterPreview::kGuitar};
+        for (auto scene : scenes) {
+            if (character_test_cancelled_) break;
+            const int64_t start = esp_timer_get_time();
+            int64_t total = 0, maximum = 0;
+            unsigned frames = 0, slow = 0;
+            while (!character_test_cancelled_ && esp_timer_get_time() - start < 6000000) {
+                const int64_t frame_start = esp_timer_get_time();
+                if (!engine_->DrawCharacterPreview(scene, (frame_start - start) / 1000000.f)) break;
+                const int64_t cost = esp_timer_get_time() - frame_start;
+                total += cost; maximum = std::max(maximum, cost); frames++; slow += cost > 33333;
+                // Drop missed deadlines rather than accumulating queued frames.
+                vTaskDelay(std::max<TickType_t>(1, pdMS_TO_TICKS(std::max<int64_t>(1, (33333 - cost) / 1000))));
+            }
+            ESP_LOGI(TAG, "Character preview scene=%d frames=%u elapsed_ms=%u avg_us=%u max_us=%u over_budget=%u stack_free=%u",
+                     static_cast<int>(scene), frames, static_cast<unsigned>((esp_timer_get_time()-start)/1000), static_cast<unsigned>(frames ? total / frames : 0),
+                     static_cast<unsigned>(maximum), slow, static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+        }
+    }
+    engine_->EndCharacterPreview();
+    ESP_LOGI(TAG, "Character preview end cancelled=%d spiram_after=%u", character_test_cancelled_.load(),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+    Application::GetInstance().Schedule([this]() {
+        expression_test_running_ = false;
+        if (director_) director_->ForceRender();
+    });
+    return;
+#endif
     struct TestFrame {
         const char* name;
         ExpressionRenderModel render_model;

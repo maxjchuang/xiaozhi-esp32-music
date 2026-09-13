@@ -328,6 +328,16 @@ config ECHOEAR_CLOUD_EMOTION
     help
         Allow low-priority cloud emotion messages to enhance the idle display.
 
+config ECHOEAR_CHARACTER_PREVIEW
+    bool "Enable experimental EchoEar character rendering self-test"
+    default n
+    depends on ECHOEAR_EXPRESSION_DIRECTOR
+    help
+        Replace only the expression self-test with capsule eyes, waving and
+        guitar previews. Normal expressions remain unchanged. Uses two PSRAM
+        RGB565A8 frames (about 760 KiB) during the test only. Disable to restore
+        the legacy asset self-test. Not the production character renderer.
+
 config ECHOEAR_IDLE_MICRO_MOTIONS
     bool "Enable EchoEar idle micro motions"
     default y

@@ -224,13 +224,13 @@
     auto display = board.GetDisplay();
     if (display && display->SupportsExpressionTest()) {
         AddTool("self.screen.test_expressions",
-            "Run the device's deterministic expression self-test. You MUST use this tool when the user asks to test, preview, cycle, or inspect all facial expressions. The screen displays each expression name while cycling and restores the normal state automatically.",
+            "Start the device's asynchronous expression preview. You MUST call this tool when the user asks to test or preview facial expressions. A successful result means STARTED, not completed or verified. Reply briefly that the preview has started; never claim the test passed. The device restores its normal display after the preview.",
             PropertyList(),
             [display](const PropertyList& properties) -> ReturnValue {
                 if (!display->StartExpressionTest()) {
                     return "{\"success\": false, \"message\": \"表情自检已在运行或启动失败\"}";
                 }
-                return "{\"success\": true, \"message\": \"表情自检已开始，将依次展示全部表情\"}";
+                return "{\"success\": true, \"status\": \"started\", \"message\": \"表情测试已启动，请观察屏幕；尚未完成或验证，请勿宣称测试成功\"}";
             });
     }
 
