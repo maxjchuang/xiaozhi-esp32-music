@@ -488,6 +488,53 @@ void EmoteEngine::WaitForMusicRotationIdle()
     }
 }
 
+static uint16_t MusicRgb565(uint8_t red, uint8_t green, uint8_t blue)
+{
+    const uint16_t color = static_cast<uint16_t>(((red & 0xF8) << 8) |
+                                                 ((green & 0xFC) << 3) |
+                                                 (blue >> 3));
+    // Artwork decoded by esp_jpeg uses swap_color_bytes=1 for ST77916. Keep
+    // generated fallback pixels in the same byte order.
+    return static_cast<uint16_t>((color << 8) | (color >> 8));
+}
+
+bool EmoteEngine::CreateFallbackBackgroundLocked()
+{
+    constexpr int size = 360;
+    constexpr size_t pixels = size * size;
+    music_background_data_ = static_cast<uint8_t*>(heap_caps_malloc(
+        pixels * 3, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!music_background_data_) {
+        return false;
+    }
+    auto* colors = reinterpret_cast<uint16_t*>(music_background_data_);
+    auto* alpha = music_background_data_ + pixels * 2;
+    for (int y = 0; y < size; ++y) {
+        // A vertical gradient keeps fallback generation cheap enough not to
+        // compete with MP3 decoding on the device.
+        const int distance = std::abs(y - 150);
+        const int glow = std::max(0, 180 - distance);
+        const uint16_t row_color = MusicRgb565(
+            static_cast<uint8_t>(6 + glow * 6 / 180),
+            static_cast<uint8_t>(14 + glow * 15 / 180),
+            static_cast<uint8_t>(30 + glow * 34 / 180));
+        for (int x = 0; x < size; ++x) {
+            const size_t index = static_cast<size_t>(y) * size + x;
+            colors[index] = row_color;
+            alpha[index] = 0xFF;
+        }
+    }
+    music_background_dsc_.header.magic = C_ARRAY_HEADER_MAGIC;
+    music_background_dsc_.header.cf = GFX_COLOR_FORMAT_RGB565A8;
+    music_background_dsc_.header.w = size;
+    music_background_dsc_.header.h = size;
+    music_background_dsc_.header.stride = size * 2;
+    music_background_dsc_.data_size = pixels * 3;
+    music_background_dsc_.data = music_background_data_;
+    gfx_img_set_src(obj_img_music_background, &music_background_dsc_);
+    return true;
+}
+
 void EmoteEngine::CreateFallbackDiscLocked()
 {
     constexpr int size = 192;
@@ -516,7 +563,11 @@ void EmoteEngine::CreateFallbackDiscLocked()
             const int radius2 = dx * dx + dy * dy;
             const size_t index = y * size + x;
             const bool label = radius2 <= 28 * 28;
-            source[index] = label ? 0x4A9F : ((radius2 / 90) % 2 ? 0x18E3 : 0x2104);
+            source[index] = label
+                ? MusicRgb565(55, 120, 180)
+                : ((radius2 / 720) % 2
+                    ? MusicRgb565(24, 36, 58)
+                    : MusicRgb565(31, 48, 76));
             frame[index] = source[index];
         }
     }
@@ -713,8 +764,14 @@ void EmoteEngine::CommitMusicFallback()
         return;
     }
     ClearMusicArtworkLocked();
+    if (!CreateFallbackBackgroundLocked()) {
+        Unlock();
+        ESP_LOGE(TAG, "Failed to allocate fallback music background");
+        return;
+    }
     CreateFallbackDiscLocked();
     if (!music_disc_source_) {
+        ClearMusicArtworkLocked();
         Unlock();
         ESP_LOGE(TAG, "Failed to allocate fallback music scene");
         return;

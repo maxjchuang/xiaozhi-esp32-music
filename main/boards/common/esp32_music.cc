@@ -8,8 +8,10 @@
 
 #include <esp_log.h>
 #include <esp_heap_caps.h>
+#include <esp_app_desc.h>
 #include <esp_pthread.h>
 #include <esp_timer.h>
+#include <esp_random.h>
 #include <mbedtls/sha256.h>
 #include <cJSON.h>
 #include <jpeg_decoder.h>
@@ -111,6 +113,43 @@ bool IsManifestResource(const std::string& manifest_url, const std::string& reso
     }
     const auto base = manifest_url.substr(0, manifest_url.size() - (sizeof(suffix) - 1));
     return resource_url == base + "/" + expected_name;
+}
+
+std::string TelemetryUrlFromManifest(const std::string& manifest_url)
+{
+    constexpr char suffix[] = "/manifest.json";
+    if (manifest_url.size() <= sizeof(suffix) - 1 ||
+        manifest_url.compare(manifest_url.size() - (sizeof(suffix) - 1),
+                             sizeof(suffix) - 1, suffix) != 0) {
+        return {};
+    }
+    return manifest_url.substr(0, manifest_url.size() - (sizeof(suffix) - 1)) +
+           "/telemetry";
+}
+
+void PostTelemetryJson(std::string url, std::string payload)
+{
+    auto network = Board::GetInstance().GetNetwork();
+    auto http = network ? network->CreateHttp(0) : nullptr;
+    if (!http) {
+        ESP_LOGW(TAG, "Telemetry HTTP client unavailable");
+        return;
+    }
+    http->SetHeader("User-Agent", "EchoEar-Music/2.0");
+    http->SetHeader("Content-Type", "application/json");
+    http->SetHeader("Accept", "application/json");
+    http->SetContent(std::move(payload));
+    if (!http->Open("POST", url)) {
+        ESP_LOGW(TAG, "Playback telemetry connection failed");
+        return;
+    }
+    const int status = http->GetStatusCode();
+    http->Close();
+    if (status < 200 || status >= 300) {
+        ESP_LOGW(TAG, "Playback telemetry rejected with HTTP %d", status);
+        return;
+    }
+    ESP_LOGI(TAG, "MUSIC_TELEMETRY uploaded status=%d", status);
 }
 
 bool DecodeJpegRgb565(const std::vector<uint8_t>& jpeg, int expected_width,
@@ -350,6 +389,11 @@ Esp32Music::Esp32Music() : last_downloaded_data_(), current_music_url_(), curren
                            buffer_cv_(), buffer_size_(0), mp3_decoder_(nullptr), mp3_frame_info_(),
                            mp3_decoder_initialized_(false)
 {
+    std::ostringstream boot_nonce;
+    const uint64_t random_value = (static_cast<uint64_t>(esp_random()) << 32) |
+                                  static_cast<uint64_t>(esp_random());
+    boot_nonce << std::hex << random_value;
+    telemetry_boot_nonce_ = boot_nonce.str();
     ESP_LOGI(TAG, "Music player initialized with default spectrum display mode");
     InitializeMp3Decoder();
 }
@@ -645,6 +689,175 @@ std::string Esp32Music::GetDownloadResult()
     return last_downloaded_data_;
 }
 
+void Esp32Music::ResetTelemetry(uint32_t generation, const std::string& metadata_url)
+{
+    std::lock_guard<std::mutex> lock(telemetry_mutex_);
+    telemetry_url_ = TelemetryUrlFromManifest(metadata_url);
+    telemetry_playback_id_ = Board::GetInstance().GetUuid() + ":" +
+                             telemetry_boot_nonce_ + ":" +
+                             std::to_string(generation);
+    // Bind the playback lifecycle to the interaction that requested it. A
+    // later wake-up (for example, "stop music") must not steal attribution.
+    telemetry_playback_session_id_ = telemetry_session_id_;
+    telemetry_started_ms_ = -1;
+    telemetry_underrun_count_ = 0;
+    telemetry_underrun_total_ms_ = 0;
+    telemetry_finalized_ = false;
+    stream_failed_ = false;
+    stream_failure_reason_.clear();
+}
+
+void Esp32Music::MarkTelemetryStarted(uint32_t generation)
+{
+    if (generation != playback_generation_ || telemetry_started_ms_ >= 0) {
+        return;
+    }
+    telemetry_started_ms_ = esp_timer_get_time() / 1000;
+    ESP_LOGI(TAG, "MUSIC_TELEMETRY started playback_id=%s",
+             telemetry_playback_id_.c_str());
+}
+
+void Esp32Music::RecordSessionTelemetry(const std::string& event_type,
+                                        const std::string& value)
+{
+    static const char* kAllowed[] = {
+        "wake_detected", "listening_started", "listening_stopped",
+        "user_utterance", "assistant_response",
+    };
+    if (std::find(std::begin(kAllowed), std::end(kAllowed), event_type) == std::end(kAllowed)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(telemetry_mutex_);
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    if (event_type == "wake_detected" || telemetry_session_id_.empty()) {
+        telemetry_session_id_ = Board::GetInstance().GetUuid() + ":session:" +
+                                telemetry_boot_nonce_ + ":" +
+                                std::to_string(now_ms);
+        telemetry_sequence_ = 0;
+    }
+    // A playback may span multiple wake/listen sessions. Preserve each event's
+    // own session identity while keeping the upload batch below its limit.
+    if (pending_session_telemetry_.size() >= 56) {
+        pending_session_telemetry_.erase(pending_session_telemetry_.begin());
+    }
+    pending_session_telemetry_.push_back(
+        {telemetry_session_id_, event_type, value.substr(0, 1000), now_ms,
+         ++telemetry_sequence_});
+}
+
+void Esp32Music::FinalizeTelemetry(uint32_t generation, const char* event_type,
+                                   const char* end_reason)
+{
+    if (telemetry_finalized_.exchange(true)) {
+        return;
+    }
+    std::string url;
+    std::string playback_id;
+    std::string session_id;
+    std::vector<PendingSessionTelemetry> session_events;
+    {
+        std::lock_guard<std::mutex> lock(telemetry_mutex_);
+        url = telemetry_url_;
+        playback_id = telemetry_playback_id_;
+        session_id = telemetry_playback_session_id_;
+        session_events = pending_session_telemetry_;
+        pending_session_telemetry_.clear();
+    }
+    if (url.empty() || playback_id.empty()) {
+        ESP_LOGD(TAG, "Playback telemetry unavailable for generation %u",
+                 static_cast<unsigned>(generation));
+        return;
+    }
+
+    const int64_t started_ms = telemetry_started_ms_.load();
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    const int64_t audible_ms = std::max<int64_t>(0, current_play_time_ms_.load());
+    const int64_t elapsed_ms = started_ms >= 0 ? std::max<int64_t>(0, now_ms - started_ms) : 0;
+    const uint32_t underruns = telemetry_underrun_count_.load();
+    const int64_t underrun_ms = telemetry_underrun_total_ms_.load();
+
+    std::unique_ptr<cJSON, decltype(&cJSON_Delete)> root(cJSON_CreateObject(), cJSON_Delete);
+    cJSON_AddNumberToObject(root.get(), "schema_version", 1);
+    cJSON_AddStringToObject(root.get(), "device_id", Board::GetInstance().GetUuid().c_str());
+    if (!session_id.empty()) {
+        cJSON_AddStringToObject(root.get(), "session_id", session_id.c_str());
+    }
+    auto* events = cJSON_AddArrayToObject(root.get(), "events");
+    uint32_t sequence = 0;
+    auto add_event = [&](const char* type, const char* suffix, int64_t monotonic_ms,
+                         bool terminal) {
+        auto* event = cJSON_CreateObject();
+        const std::string event_id = playback_id + ":" + suffix;
+        cJSON_AddStringToObject(event, "event_id", event_id.c_str());
+        cJSON_AddStringToObject(event, "event_type", type);
+        cJSON_AddStringToObject(event, "playback_id", playback_id.c_str());
+        if (!session_id.empty()) {
+            cJSON_AddStringToObject(event, "session_id", session_id.c_str());
+        }
+        cJSON_AddNumberToObject(event, "sequence", ++sequence);
+        cJSON_AddNumberToObject(event, "monotonic_ms", monotonic_ms);
+        auto* payload = cJSON_AddObjectToObject(event, "payload");
+        cJSON_AddNumberToObject(payload, "audible_played_ms", terminal ? audible_ms : 0);
+        if (terminal) {
+            cJSON_AddNumberToObject(payload, "elapsed_since_start_ms", elapsed_ms);
+            cJSON_AddNumberToObject(payload, "underrun_count", underruns);
+            cJSON_AddNumberToObject(payload, "underrun_total_ms", underrun_ms);
+            cJSON_AddStringToObject(payload, "end_reason", end_reason);
+        }
+        cJSON_AddItemToArray(events, event);
+    };
+    for (const auto& pending : session_events) {
+        if (pending.session_id.empty()) {
+            continue;
+        }
+        auto* event = cJSON_CreateObject();
+        const std::string event_id = pending.session_id + ":" +
+                                     std::to_string(pending.sequence);
+        cJSON_AddStringToObject(event, "event_id", event_id.c_str());
+        cJSON_AddStringToObject(event, "event_type", pending.event_type.c_str());
+        cJSON_AddStringToObject(event, "session_id", pending.session_id.c_str());
+        cJSON_AddNumberToObject(event, "sequence", pending.sequence);
+        cJSON_AddNumberToObject(event, "monotonic_ms", pending.monotonic_ms);
+        auto* payload = cJSON_AddObjectToObject(event, "payload");
+        if (pending.event_type == "wake_detected") {
+            cJSON_AddStringToObject(payload, "wake_method", pending.value.c_str());
+            cJSON_AddStringToObject(payload, "firmware_version",
+                                    esp_app_get_description()->version);
+        } else if (pending.event_type == "user_utterance") {
+            cJSON_AddStringToObject(payload, "user_text", pending.value.c_str());
+        } else if (pending.event_type == "assistant_response") {
+            cJSON_AddStringToObject(payload, "assistant_text", pending.value.c_str());
+        }
+        cJSON_AddItemToArray(events, event);
+    }
+    if (started_ms >= 0) {
+        add_event("playback_started", "started", started_ms, false);
+    }
+    if (underruns > 0) {
+        auto* event = cJSON_CreateObject();
+        const std::string event_id = playback_id + ":underrun-summary";
+        cJSON_AddStringToObject(event, "event_id", event_id.c_str());
+        cJSON_AddStringToObject(event, "event_type", "audio_underrun");
+        cJSON_AddStringToObject(event, "playback_id", playback_id.c_str());
+        cJSON_AddNumberToObject(event, "sequence", ++sequence);
+        cJSON_AddNumberToObject(event, "monotonic_ms", now_ms);
+        auto* payload = cJSON_AddObjectToObject(event, "payload");
+        cJSON_AddNumberToObject(payload, "underrun_count", underruns);
+        cJSON_AddNumberToObject(payload, "underrun_total_ms", underrun_ms);
+        cJSON_AddItemToArray(events, event);
+    }
+    add_event(event_type, "ended", now_ms, true);
+    char* serialized = cJSON_PrintUnformatted(root.get());
+    if (!serialized) {
+        ESP_LOGW(TAG, "Failed to serialize playback telemetry");
+        return;
+    }
+    std::string payload(serialized);
+    cJSON_free(serialized);
+    ConfigureNextPthread("music_telemetry", 6144, 2, true);
+    std::thread(PostTelemetryJson, std::move(url), std::move(payload)).detach();
+}
+
 bool Esp32Music::PlayUrl(const std::string &music_url, const std::string &song_name)
 {
     return Play({music_url, song_name, ""});
@@ -652,6 +865,10 @@ bool Esp32Music::PlayUrl(const std::string &music_url, const std::string &song_n
 
 bool Esp32Music::Play(const MusicPlaybackRequest& request)
 {
+    const uint32_t previous_generation = playback_generation_.load();
+    if (is_playing_) {
+        FinalizeTelemetry(previous_generation, "song_switched", "song_switched");
+    }
     const uint32_t generation = ++playback_generation_;
     if (metadata_thread_.joinable()) {
         metadata_thread_.join();
@@ -662,6 +879,7 @@ bool Esp32Music::Play(const MusicPlaybackRequest& request)
     lyric_offset_ms_ = 600;
     track_duration_ms_ = 0;
     last_progress_update_ms_ = -1;
+    ResetTelemetry(generation, request.metadata_url);
 
     // URL playback has no lyric side channel. Stop an earlier lyric task so
     // stale lyrics from the previous song cannot remain on screen.
@@ -918,6 +1136,7 @@ bool Esp32Music::StopStreaming()
     ESP_LOGI(TAG, "Stopping music streaming - current state: downloading=%d, playing=%d",
              is_downloading_.load(), is_playing_.load());
 
+    FinalizeTelemetry(playback_generation_.load(), "playback_stopped", "user_stopped");
     PostMusicBehavior(DisplayBehavior::kIdle, current_song_name_);
     ++playback_generation_;
     // StopStreaming is dispatched by the application's native FreeRTOS task,
@@ -1030,8 +1249,12 @@ bool Esp32Music::StopStreaming()
 
 bool Esp32Music::RequestStopStreaming()
 {
+    const uint32_t generation = playback_generation_.load();
     const bool was_active = is_playing_.exchange(false) |
                             is_downloading_.exchange(false);
+    if (was_active) {
+        FinalizeTelemetry(generation, "playback_stopped", "user_stopped");
+    }
     is_lyric_running_ = false;
     ++playback_generation_;
 
@@ -1286,6 +1509,11 @@ void Esp32Music::DownloadAudioStream(const std::string &music_url, uint32_t gene
         ESP_LOGE(TAG, "Audio stream ended before completion after %d attempts at offset %u",
                  kMaxConnectAttempts, static_cast<unsigned>(total_downloaded));
         PostMusicError(total_downloaded == 0 ? "connect_failed" : "stream_interrupted");
+        stream_failed_ = true;
+        {
+            std::lock_guard<std::mutex> lock(telemetry_mutex_);
+            stream_failure_reason_ = "network_failed";
+        }
     }
     if (generation == playback_generation_) {
         is_downloading_ = false;
@@ -1314,6 +1542,7 @@ void Esp32Music::PlayAudioStream(uint32_t generation)
     {
         ESP_LOGE(TAG, "MP3 decoder not initialized");
         PostMusicError("decoder_unavailable");
+        FinalizeTelemetry(generation, "playback_failed", "decode_failed");
         is_playing_ = false;
         return;
     }
@@ -1328,6 +1557,7 @@ void Esp32Music::PlayAudioStream(uint32_t generation)
             ESP_LOGE(TAG, "No audio data available for playback");
             if (is_playing_) {
                 PostMusicError("no_audio_data");
+                FinalizeTelemetry(generation, "playback_failed", "network_failed");
             }
             is_playing_ = false;
             return;
@@ -1363,6 +1593,7 @@ void Esp32Music::PlayAudioStream(uint32_t generation)
     {
         ESP_LOGE(TAG, "Audio codec not available");
         PostMusicError("codec_unavailable");
+        FinalizeTelemetry(generation, "playback_failed", "decode_failed");
         is_playing_ = false;
         return;
     }
@@ -1375,6 +1606,7 @@ void Esp32Music::PlayAudioStream(uint32_t generation)
     {
         ESP_LOGE(TAG, "Failed to enable audio output for music playback");
         PostMusicError("output_unavailable");
+        FinalizeTelemetry(generation, "playback_failed", "decode_failed");
         is_playing_ = false;
         return;
     }
@@ -1396,6 +1628,7 @@ void Esp32Music::PlayAudioStream(uint32_t generation)
     {
         ESP_LOGE(TAG, "Failed to allocate MP3 input buffer");
         PostMusicError("audio_memory_exhausted");
+        FinalizeTelemetry(generation, "playback_failed", "decode_failed");
         is_playing_ = false;
         return;
     }
@@ -1475,6 +1708,8 @@ void Esp32Music::PlayAudioStream(uint32_t generation)
                     if (wait_ms >= 20) {
                         ++underrun_count;
                         underrun_total_ms += wait_ms;
+                        telemetry_underrun_count_ = underrun_count;
+                        telemetry_underrun_total_ms_ = underrun_total_ms;
                         ESP_LOGW(TAG, "MUSIC_METRIC audio_underrun wait_ms=%d count=%u",
                                  static_cast<int>(wait_ms),
                                  static_cast<unsigned>(underrun_count));
@@ -1569,17 +1804,18 @@ void Esp32Music::PlayAudioStream(uint32_t generation)
 
             // 更新当前播放时间
             current_play_time_ms_ += frame_duration_ms;
+            const int64_t current_play_time_ms = current_play_time_ms_.load();
 
             ESP_LOGD(TAG, "Frame %d: time=%lldms, duration=%dms, rate=%d, ch=%d",
-                     total_frames_decoded_, current_play_time_ms_, frame_duration_ms,
+                     total_frames_decoded_, current_play_time_ms, frame_duration_ms,
                      mp3_frame_info_.samprate, mp3_frame_info_.nChans);
 
             // 更新歌词显示
-            UpdateLyricDisplay(current_play_time_ms_ + lyric_offset_ms_.load());
-            if (current_play_time_ms_ / 500 != last_progress_update_ms_ / 500) {
-                last_progress_update_ms_ = current_play_time_ms_;
+            UpdateLyricDisplay(current_play_time_ms + lyric_offset_ms_.load());
+            if (current_play_time_ms / 500 != last_progress_update_ms_ / 500) {
+                last_progress_update_ms_ = current_play_time_ms;
                 if (auto display = Board::GetInstance().GetDisplay()) {
-                    display->UpdateMusicProgress(current_play_time_ms_, track_duration_ms_.load());
+                    display->UpdateMusicProgress(current_play_time_ms, track_duration_ms_.load());
                 }
             }
 
@@ -1652,6 +1888,7 @@ void Esp32Music::PlayAudioStream(uint32_t generation)
 
                 // 发送到Application的音频解码队列
                 app.AddAudioData(std::move(packet));
+                MarkTelemetryStarted(generation);
                 total_played += pcm_size_bytes;
 
                 // 打印播放进度
@@ -1693,6 +1930,19 @@ void Esp32Music::PlayAudioStream(uint32_t generation)
              static_cast<unsigned>(underrun_count),
              static_cast<int>(underrun_total_ms));
     ESP_LOGI(TAG, "Performing basic cleanup from play thread");
+
+    if (generation == playback_generation_ && !telemetry_finalized_) {
+        if (stream_failed_) {
+            std::string reason;
+            {
+                std::lock_guard<std::mutex> lock(telemetry_mutex_);
+                reason = stream_failure_reason_.empty() ? "network_failed" : stream_failure_reason_;
+            }
+            FinalizeTelemetry(generation, "network_error", reason.c_str());
+        } else {
+            FinalizeTelemetry(generation, "playback_completed", "natural_completed");
+        }
+    }
 
     // A superseded playback thread must never tear down the replacement
     // track's scene or invalidate its metadata generation. This happens when

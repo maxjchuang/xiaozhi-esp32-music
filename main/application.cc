@@ -57,6 +57,27 @@ static DisplayBehavior GetDisplayBehavior(DeviceState state)
     return DisplayBehavior::kStartup;
 }
 
+static void RecordMusicSessionTelemetry(const std::string& event_type,
+                                        const std::string& value = {})
+{
+    if (auto music = Board::GetInstance().GetMusic()) {
+        music->RecordSessionTelemetry(event_type, value);
+    }
+}
+
+static bool IsInternalToolNarration(const char* text)
+{
+    if (text == nullptr) {
+        return false;
+    }
+    while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') {
+        ++text;
+    }
+    // Tool-call narration is transport/control metadata, not a response spoken
+    // to the user. Xiaozhi currently prefixes these fragments with '%'.
+    return *text == '%';
+}
+
 Application::Application()
 {
     event_group_ = xEventGroupCreate();
@@ -533,6 +554,9 @@ void Application::Start()
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
+                    if (!IsInternalToolNarration(text->valuestring)) {
+                        RecordMusicSessionTelemetry("assistant_response", text->valuestring);
+                    }
                     Schedule([this, display, message = std::string(text->valuestring)]() {
                         display->SetChatMessage("assistant", message.c_str());
                     });
@@ -542,6 +566,7 @@ void Application::Start()
             auto text = cJSON_GetObjectItem(root, "text");
             if (cJSON_IsString(text)) {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
+                RecordMusicSessionTelemetry("user_utterance", text->valuestring);
                 Schedule([this, display, message = std::string(text->valuestring)]() {
                     display->SetChatMessage("user", message.c_str());
                     display->SetBehavior({
@@ -738,6 +763,7 @@ void Application::OnWakeWordDetected()
 
         auto wake_word = audio_service_.GetLastWakeWord();
         ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
+        RecordMusicSessionTelemetry("wake_detected", "wake_word");
 #if CONFIG_USE_AFE_WAKE_WORD || CONFIG_USE_CUSTOM_WAKE_WORD
         // Encode and send the wake word data to the server
         while (auto packet = audio_service_.PopWakeWordPacket())
@@ -796,6 +822,11 @@ void Application::SetDeviceState(DeviceState state)
 
     // Send the state change event
     DeviceStateEventManager::GetInstance().PostStateChangeEvent(previous_state, state);
+    if (state == kDeviceStateListening) {
+        RecordMusicSessionTelemetry("listening_started");
+    } else if (previous_state == kDeviceStateListening) {
+        RecordMusicSessionTelemetry("listening_stopped");
+    }
 
     auto &board = Board::GetInstance();
     auto display = board.GetDisplay();
@@ -867,6 +898,8 @@ void Application::WakeWordInvoke(const std::string &wake_word)
 {
     if (device_state_ == kDeviceStateIdle)
     {
+        RecordMusicSessionTelemetry(
+            "wake_detected", wake_word.empty() ? "touch" : "manual");
         ToggleChatState();
         Schedule([this, wake_word]()
                  {

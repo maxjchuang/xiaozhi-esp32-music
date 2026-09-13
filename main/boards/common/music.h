@@ -30,6 +30,8 @@ public:
     virtual bool IsPlaying() const = 0;
     virtual bool IsDownloading() const = 0;
     virtual int16_t* GetAudioData() = 0;
+    virtual void RecordSessionTelemetry(const std::string& event_type,
+                                        const std::string& value = "") {}
 };
 
 #endif // MUSIC_H

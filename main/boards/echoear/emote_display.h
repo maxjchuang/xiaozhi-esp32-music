@@ -87,6 +87,7 @@ private:
     std::array<int16_t, 192> music_disc_right_{};
 
     void ClearMusicArtworkLocked();
+    bool CreateFallbackBackgroundLocked();
     void CreateFallbackDiscLocked();
     void CommitMusicSceneLocked();
     void InitializeMusicDiscBuffer(uint8_t* buffer);

@@ -25,6 +25,14 @@ struct AudioChunk {
     AudioChunk(uint8_t* d, size_t s) : data(d), size(s) {}
 };
 
+struct PendingSessionTelemetry {
+    std::string session_id;
+    std::string event_type;
+    std::string value;
+    int64_t monotonic_ms;
+    uint32_t sequence;
+};
+
 class Esp32Music : public Music {
 public:
     // 显示模式控制 - 移动到public区域
@@ -57,7 +65,7 @@ private:
     std::atomic<bool> is_downloading_;
     std::thread play_thread_;
     std::thread download_thread_;
-    int64_t current_play_time_ms_;  // 当前播放时间(毫秒)
+    std::atomic<int64_t> current_play_time_ms_{0};  // 当前播放时间(毫秒)
     int64_t last_frame_time_ms_;    // 上一帧的时间戳
     int total_frames_decoded_;      // 已解码的帧数
 
@@ -73,6 +81,22 @@ private:
     HMP3Decoder mp3_decoder_;
     MP3FrameInfo mp3_frame_info_;
     bool mp3_decoder_initialized_;
+
+    // 播放遥测只在音频线程内累计，终止后由低优先级线程批量发送。
+    std::mutex telemetry_mutex_;
+    std::string telemetry_url_;
+    std::string telemetry_playback_id_;
+    std::string telemetry_boot_nonce_;
+    std::atomic<uint32_t> telemetry_sequence_{0};
+    std::atomic<int64_t> telemetry_started_ms_{-1};
+    std::atomic<uint32_t> telemetry_underrun_count_{0};
+    std::atomic<int64_t> telemetry_underrun_total_ms_{0};
+    std::atomic<bool> telemetry_finalized_{false};
+    std::atomic<bool> stream_failed_{false};
+    std::string stream_failure_reason_;
+    std::string telemetry_session_id_;
+    std::string telemetry_playback_session_id_;
+    std::vector<PendingSessionTelemetry> pending_session_telemetry_;
     
     // 私有方法
     void DownloadAudioStream(const std::string& music_url, uint32_t generation);
@@ -89,6 +113,10 @@ private:
     void LyricDisplayThread();
     void UpdateLyricDisplay(int64_t current_time_ms);
     void LoadMetadata(uint32_t generation, const std::string& metadata_url);
+    void ResetTelemetry(uint32_t generation, const std::string& metadata_url);
+    void MarkTelemetryStarted(uint32_t generation);
+    void FinalizeTelemetry(uint32_t generation, const char* event_type,
+                           const char* end_reason);
     
     // ID3标签处理
     size_t SkipId3Tag(uint8_t* data, size_t size);
@@ -113,6 +141,8 @@ public:
     virtual bool IsPlaying() const override { return is_playing_; }
     virtual bool IsDownloading() const override { return is_downloading_; }
     virtual int16_t* GetAudioData() override { return final_pcm_data_fft; }
+    virtual void RecordSessionTelemetry(const std::string& event_type,
+                                        const std::string& value = "") override;
     
     // 显示模式控制方法
     void SetDisplayMode(DisplayMode mode);
