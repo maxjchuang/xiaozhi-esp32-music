@@ -57,6 +57,9 @@ bool CustomWakeWord::Initialize(AudioCodec* codec) {
     multinet_->set_det_threshold(multinet_model_data_, CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f);
     esp_mn_commands_clear();
     esp_mn_commands_add(1, CONFIG_CUSTOM_WAKE_WORD);
+    if (CONFIG_CUSTOM_WAKE_WORD_ALTERNATE[0] != '\0') {
+        esp_mn_commands_add(2, CONFIG_CUSTOM_WAKE_WORD_ALTERNATE);
+    }
     esp_mn_commands_update();
     
     multinet_->print_active_speech_commands(multinet_model_data_);
@@ -102,13 +105,14 @@ void CustomWakeWord::Feed(const std::vector<int16_t>& data) {
         ESP_LOGI(TAG, "Custom wake word detected: command_id=%d, string=%s, prob=%f", 
                 mn_result->command_id[0], mn_result->string, mn_result->prob[0]);
         
-        if (mn_result->command_id[0] == 1) {
+        const int command_id = mn_result->command_id[0];
+        if (command_id == 1 || command_id == 2) {
             last_detected_wake_word_ = CONFIG_CUSTOM_WAKE_WORD_DISPLAY;
-        }
-        running_ = false;
-        
-        if (wake_word_detected_callback_) {
-            wake_word_detected_callback_(last_detected_wake_word_);
+            running_ = false;
+
+            if (wake_word_detected_callback_) {
+                wake_word_detected_callback_(last_detected_wake_word_);
+            }
         }
         multinet_->clean(multinet_model_data_);
     } else if (mn_state == ESP_MN_STATE_TIMEOUT) {

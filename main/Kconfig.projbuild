@@ -496,6 +496,14 @@ config CUSTOM_WAKE_WORD
     help
         自定义唤醒词，中文用拼音表示，每个字之间用空格隔开
 
+config CUSTOM_WAKE_WORD_ALTERNATE
+    string "Custom Wake Word Alternate Pronunciation"
+    default ""
+    depends on USE_CUSTOM_WAKE_WORD
+    help
+        可选的模糊音或替代发音，命中后与主唤醒词执行相同动作。
+        中文用拼音表示，每个字之间用空格隔开；留空则不启用。
+
 config CUSTOM_WAKE_WORD_DISPLAY
     string "Custom Wake Word Display"
     default "小土豆"
