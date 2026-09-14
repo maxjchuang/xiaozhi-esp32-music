@@ -148,6 +148,8 @@ private:
     void ApplyRenderModel(const ExpressionRenderModel& render_model);
     void ApplyExpressionTestFrame(const char* name, const ExpressionRenderModel& render_model);
     void RunExpressionTest();
+    bool StartCharacterTest(CharacterTestSuite suite);
+    CharacterTestSuite character_test_suite_ = CharacterTestSuite::kBaseline; // immutable during test
     static void ExpressionTestTask(void* arg);
 #if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
     static void LiveCharacterTask(void* arg);

@@ -353,7 +353,8 @@ config ECHOEAR_CHARACTER_TEST_SERIAL
     default n
     depends on ECHOEAR_CHARACTER_PREVIEW && ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
     help
-        Accept only character-test start/status/cancel commands on USB serial.
+        Accept fixed character-test start/theatre/remaining/all/status/cancel
+        commands on USB serial.
         No shell, network access, or automatic startup tests. Keep disabled in
         release builds. Host automation supplies bounded rounds and timeouts.
 

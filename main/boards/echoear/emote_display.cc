@@ -1554,7 +1554,7 @@ void EmoteDisplay::CharacterSerialTask(void* arg)
         vTaskDelete(nullptr);
         return;
     }
-    ESP_LOGI(TAG, "Character serial ready: character-test start/status/cancel");
+    ESP_LOGI(TAG, "Character serial ready: character-test start/theatre/remaining/all/status/cancel");
     char line[64]; size_t length = 0; bool overflow = false;
     for (;;) {
         char ch;
@@ -1569,6 +1569,18 @@ void EmoteDisplay::CharacterSerialTask(void* arg)
         if (!overflow && std::strcmp(line, "character-test start") == 0) {
             Application::GetInstance().Schedule([self]() {
                 const bool accepted = self->StartExpressionTest();
+                ESP_LOGI(TAG, "Character serial start accepted=%d", accepted);
+            });
+        } else if (!overflow && std::strcmp(line, "character-test theatre") == 0) {
+            Application::GetInstance().Schedule([self]() {
+                const bool accepted = self->StartCharacterTest(CharacterTestSuite::kTheatre);
+                ESP_LOGI(TAG, "Character serial start accepted=%d", accepted);
+            });
+        } else if (!overflow && (std::strcmp(line, "character-test remaining") == 0 ||
+                                 std::strcmp(line, "character-test all") == 0)) {
+            const auto suite = std::strcmp(line, "character-test all") == 0 ? CharacterTestSuite::kAll : CharacterTestSuite::kRemaining;
+            Application::GetInstance().Schedule([self, suite]() {
+                const bool accepted = self->StartCharacterTest(suite);
                 ESP_LOGI(TAG, "Character serial start accepted=%d", accepted);
             });
         } else if (!overflow && std::strcmp(line, "character-test cancel") == 0) {
@@ -1595,6 +1607,11 @@ void EmoteDisplay::CancelExpressionTest()
 
 bool EmoteDisplay::StartExpressionTest()
 {
+    return StartCharacterTest(CharacterTestSuite::kBaseline);
+}
+
+bool EmoteDisplay::StartCharacterTest(CharacterTestSuite suite)
+{
 #if CONFIG_ECHOEAR_CHARACTER_PREVIEW
     if (!engine_ || engine_->IsMusicSceneActive()) return false;
 #endif
@@ -1602,6 +1619,7 @@ bool EmoteDisplay::StartExpressionTest()
     if (!expression_test_running_.compare_exchange_strong(expected, true)) {
         return false;
     }
+    character_test_suite_ = suite;
 
 #if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
     StopLiveCharacter();
@@ -1645,19 +1663,21 @@ void EmoteDisplay::RunExpressionTest()
 {
 #if CONFIG_ECHOEAR_CHARACTER_PREVIEW
     const size_t before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    const bool ready = engine_->BeginCharacterPreview();
+    const auto suite = CharacterTestScenes(character_test_suite_);
+    const bool ready = engine_->BeginCharacterPreview(suite.scenes[0], suite.guitar_cache);
     bool failed = !ready;
     unsigned completed = 0;
     ESP_LOGI(TAG, "Character preview begin ready=%d buffer_bytes=%u spiram_before=%u", ready,
              static_cast<unsigned>(kCharacterBytes * 2), static_cast<unsigned>(before));
     if (ready) {
-        const CharacterPreview scenes[] = {CharacterPreview::kEyes, CharacterPreview::kWave, CharacterPreview::kGuitar};
-        for (auto scene : scenes) {
+        for (unsigned index = 0; index < suite.count; ++index) {
+            const auto scene = suite.scenes[index];
+            const int64_t duration_us = CharacterPreviewDurationMs(scene) * 1000LL;
             if (character_test_cancelled_) break;
             const int64_t start = esp_timer_get_time();
             int64_t total = 0, maximum = 0;
             unsigned frames = 0, slow = 0;
-            while (!character_test_cancelled_ && esp_timer_get_time() - start < 6000000) {
+            while (!character_test_cancelled_ && esp_timer_get_time() - start < duration_us) {
                 const int64_t frame_start = esp_timer_get_time();
                 if (!engine_->DrawCharacterPreview(scene, (frame_start - start) / 1000000.f)) { failed = true; break; }
                 const int64_t cost = esp_timer_get_time() - frame_start;
@@ -1669,7 +1689,7 @@ void EmoteDisplay::RunExpressionTest()
                      static_cast<int>(scene), frames, static_cast<unsigned>((esp_timer_get_time()-start)/1000), static_cast<unsigned>(frames ? total / frames : 0),
                      static_cast<unsigned>(maximum), slow, static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
             if (failed) break;
-            if (!character_test_cancelled_ && frames && esp_timer_get_time() - start >= 6000000) ++completed;
+            if (!character_test_cancelled_ && frames && esp_timer_get_time() - start >= duration_us) ++completed;
         }
     }
     engine_->EndCharacterPreview();
