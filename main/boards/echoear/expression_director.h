@@ -33,6 +33,7 @@ struct ExpressionRenderModel {
     bool music_scene_visible = false;
     // No value means legacy resources; finite acts are ended by the director.
     std::optional<CharacterPreview> character_pose;
+    bool music_animation_running = false;
 
     bool operator==(const ExpressionRenderModel& other) const;
 };

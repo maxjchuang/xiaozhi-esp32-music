@@ -239,10 +239,12 @@ void DrawNote(Painter& p,Matrix screen,float x,float y,float opacity,float angle
     p.Oval(m,0,0,8,5,0xbfdbc0);p.Line(m,6,0,6,-26,4,0xbfdbc0);p.Line(m,6,-26,17,-20,4,0xbfdbc0);
 }
 
-void DrawRemaining(Painter& p,const Matrix& screen,CharacterPreview scene,float age) {
+void DrawRemaining(Painter& p,const Matrix& screen,CharacterPreview scene,float age,
+                   double companion_seconds=-1) {
     constexpr float amount=.55f;
     const float duration=CharacterPreviewDurationMs(scene)/1000.f;
-    const float presence=Ramp(age/.65f)*Ramp((duration-age)/.65f),lift=(1-presence)*95;
+    const bool companion=companion_seconds>=0;
+    const float presence=Ramp(age/.65f)*(companion?1: Ramp((duration-age)/.65f)),lift=(1-presence)*95;
     const float chin_lift=Ramp((age-.15f)/.7f)*(1-Ramp((age-4.1f)/.9f));
     const float lean=Ramp((age-1)/.8f)*(1-Ramp((age-3.1f)/.8f));
     const float rub_lift=Ramp((age-.65f)/.7f)*(1-Ramp((age-3.5f)/.9f));
@@ -256,7 +258,8 @@ void DrawRemaining(Painter& p,const Matrix& screen,CharacterPreview scene,float 
     case CharacterPreview::kRub: height+=(25-158)*close;y=9*close;break;
     case CharacterPreview::kPeek: height+=(32-158)*cover+(90-158)*joy;smile=joy;asym=35*peek;break;
     case CharacterPreview::kHeart: smile=presence;height+=(90-158)*presence;y=-9*presence;break;
-    default: smile=presence;height+=(90-158)*presence;y=(-7+std::sin(age*5)*2*amount)*presence;break;
+    default: smile=presence;height+=(90-158)*presence;
+        y=(-7+(companion?static_cast<float>(std::sin(std::fmod(companion_seconds,6.283185307179586/5)*5)):std::sin(age*5))*2*amount)*presence;break;
     }
     const float yaw=std::clamp(x/48,-1.f,1.f),turn=std::abs(yaw);
     const auto face=screen.At(360+x,348+y,roll);
@@ -300,11 +303,13 @@ void DrawRemaining(Painter& p,const Matrix& screen,CharacterPreview scene,float 
     case CharacterPreview::kShaker:
         for(int side:{-1,1}) {
             p.Opacity(presence);
-            const float swing=std::sin(age*7+side*pi/2)*.28f*amount;
+            const float swing=(companion?static_cast<float>(std::sin(std::fmod(companion_seconds,6.283185307179586/7)*7+side*pi/2)):std::sin(age*7+side*pi/2))*.28f*amount;
             const auto m=screen.At(360+side*137,481+lift,side*.20f+swing);
             p.Line(m,0,44,0,-51,12,0xc6aa7d);p.Oval(m,0,-67,25,34,side==1?0xb5cdaa:0xdec095);
             p.Line(m,-20,-68,20,-68,5,ivory);p.Paw(m.At(0,13).Scale(-side,1),true);
-            const float phase=std::fmod(age+side*.55f,1.9f)/1.9f;
+            const float phase=companion
+                ? static_cast<float>(std::fmod(std::fmod(companion_seconds,1.9)+side*.55+1.9,1.9)/1.9)
+                : std::fmod(age+side*.55f,1.9f)/1.9f;
             DrawNote(p,screen,360+side*(192+phase*12),355-phase*103,presence*std::max(0.f,std::sin(phase*pi)),side*.15f);
         }
         break;
@@ -314,12 +319,13 @@ void DrawRemaining(Painter& p,const Matrix& screen,CharacterPreview scene,float 
         for(int xline=-75;xline<90;xline+=50)p.Line(m,xline,8,xline+20,58,4,0xf0d8ad);
         p.Oval(m,0,0,100,30,0xeddfbe);
         for(int side:{-1,1}) {
-            const float beat=std::fmod(age*1.6f+(side==1?.5f:0),1.f);
+            const float beat=companion ? static_cast<float>(std::fmod(std::fmod(companion_seconds,.625)*1.6+(side==1?.5:0),1.0))
+                : std::fmod(age*1.6f+(side==1?.5f:0),1.f);
             const float down=std::pow(std::sin(beat*pi),6),hy=-70+down*53;
             p.Line(m,side*91,hy,side*43,hy+24,9,0xc6aa7d);p.Oval(m,side*43,hy+24,9,7,ivory);
             p.Paw(m.At(side*94,hy-2,side*.2f).Scale(-side,1),true);
         }
-        const float phase=std::fmod(age,2.f)/2;
+        const float phase=companion ? static_cast<float>(std::fmod(companion_seconds,2.0)/2) : std::fmod(age,2.f)/2;
         DrawNote(p,screen,533,410-phase*60,presence*std::sin(phase*pi),.1f);
         break;
     }
@@ -327,15 +333,16 @@ void DrawRemaining(Painter& p,const Matrix& screen,CharacterPreview scene,float 
         const auto m=screen.At(360,503+lift);
         p.Rect(m,-132,-17,264,88,18,0x94b399);
         for(int i=0;i<8;i++) {
-            const bool pressed=i==static_cast<int>(age*3)%8;
+            const bool pressed=i==(companion ? static_cast<int>(std::fmod(companion_seconds,8.0/3)*3)%8 : static_cast<int>(age*3)%8);
             p.Rect(m,-120+i*30,-5+(pressed?4:0),27,59-(pressed?4:0),0,pressed?0xd4dfb7:ivory);
         }
         for(int i:{0,1,3,4,5})p.Rect(m,-101+i*30,-5,15,31,0,dark);
         for(int side:{-1,1}) {
-            const float bounce=(1-std::cos(age*6+side*pi/2))*5;
-            p.Paw(m.At(side*(58+std::sin(age*1.4f)*12),-19+bounce).Scale(.78f,.78f).At(0,0,pi).Scale(side,1));
+            const float bounce=(1-(companion ? static_cast<float>(std::cos(std::fmod(companion_seconds,6.283185307179586/6)*6+side*pi/2)) : std::cos(age*6+side*pi/2)))*5;
+            const float travel=companion ? static_cast<float>(std::sin(std::fmod(companion_seconds,6.283185307179586/1.4)*1.4)) : std::sin(age*1.4f);
+            p.Paw(m.At(side*(58+travel*12),-19+bounce).Scale(.78f,.78f).At(0,0,pi).Scale(side,1));
         }
-        const float phase=std::fmod(age,2.f)/2;
+        const float phase=companion ? static_cast<float>(std::fmod(companion_seconds,2.0)/2) : std::fmod(age,2.f)/2;
         DrawNote(p,screen,543,417-phase*55,presence*std::sin(phase*pi),.15f);
         break;
     }
@@ -379,6 +386,17 @@ bool RenderFrame(uint8_t* buffer,size_t size,CharacterPreview scene,float second
 } // namespace
 bool RenderCharacterPreview(uint8_t* buffer,size_t size,CharacterPreview scene,float seconds) {
     return RenderFrame(buffer,size,scene,seconds);
+}
+bool RenderMusicCompanion(uint8_t* buffer,size_t size,double seconds,CharacterPreview instrument) {
+    if(!buffer||size<kCharacterBytes||!std::isfinite(seconds)||seconds<0)return false;
+    if(instrument==CharacterPreview::kGuitar)
+        return RenderFrame(buffer,size,instrument,static_cast<float>(std::fmod(seconds,10.5)));
+    if(instrument!=CharacterPreview::kShaker && instrument!=CharacterPreview::kDrum && instrument!=CharacterPreview::kKeys)return false;
+    Painter p(buffer);
+    const Matrix screen{.5f,0,0,.5f,0,0};
+    DrawRemaining(p,screen,instrument,
+                  static_cast<float>(std::min(seconds,1.0)),seconds);
+    return true;
 }
 bool RenderGuitarBase(uint8_t* buffer,size_t size) {
     return RenderFrame(buffer,size,CharacterPreview::kGuitar,0,true);

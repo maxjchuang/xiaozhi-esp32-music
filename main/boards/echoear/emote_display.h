@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdint>
 #include "character_preview.h"
+#include "music_companion_clock.h"
 
 namespace anim {
 
@@ -37,8 +38,9 @@ public:
     void setEyes(int aaf, bool repeat, int fps);
     void stopEyes();
 #if CONFIG_ECHOEAR_CHARACTER_PREVIEW
-    bool BeginCharacterPreview(CharacterPreview initial = CharacterPreview::kEyes, bool guitar_cache = true);
-    bool DrawCharacterPreview(CharacterPreview scene, float seconds);
+    bool BeginCharacterPreview(CharacterPreview initial = CharacterPreview::kEyes, bool guitar_cache = true,
+                               bool companion = false, double seconds = 0);
+    bool DrawCharacterPreview(CharacterPreview scene, double seconds);
     void EndCharacterPreview();
 #endif
     
@@ -59,6 +61,7 @@ public:
     void ExitMusicScene();
     bool IsMusicSceneActive() const { return music_scene_active_; }
     bool IsMusicOverlayVisible() const { return music_overlay_visible_; }
+    bool IsMusicCompanionVisible() const { return music_companion_visible_; }
     mmap_assets_handle_t GetAssetsHandle() const { return assets_handle_; }
 
     // Callback functions (public to be accessible from static helper functions)
@@ -72,6 +75,7 @@ private:
     uint8_t* character_front_ = nullptr;
     uint8_t* character_back_ = nullptr;
     uint8_t* character_guitar_base_ = nullptr;
+    bool character_guitar_cache_attempted_ = false;
     gfx_image_dsc_t character_descriptor_{};
 #endif
     mmap_assets_handle_t assets_handle_;
@@ -89,6 +93,7 @@ private:
     std::atomic<bool> music_rotation_paused_{true};
     std::atomic<bool> music_rotation_busy_{false};
     std::atomic<bool> music_scene_active_{false};
+    std::atomic<bool> music_companion_visible_{false};
     // requested is the director's desired foreground ownership; visible is
     // the state actually committed to the panel after artwork is ready.
     std::atomic<bool> music_overlay_requested_{false};
@@ -162,6 +167,14 @@ private:
     std::optional<CharacterPreview> live_pose_; // protected by live_mutex_
     bool live_owns_preview_ = false;
     int64_t live_started_us_ = 0;
+    bool live_companion_ = false;
+    bool companion_redraw_ = false;
+    CharacterPreview companion_instrument_ = CharacterPreview::kShaker;
+    bool companion_advancing_ = false;
+    MusicCompanionClock companion_clock_;
+    int64_t companion_stats_since_us_ = 0;
+    uint32_t companion_frames_ = 0;
+    int64_t companion_render_us_ = 0, companion_max_us_ = 0;
 #endif
 #if CONFIG_ECHOEAR_CHARACTER_TEST_SERIAL
     static void CharacterSerialTask(void* arg);

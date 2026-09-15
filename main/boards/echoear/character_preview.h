@@ -41,6 +41,10 @@ constexpr int kCharacterSize = 360;
 constexpr size_t kCharacterBytes = kCharacterSize * kCharacterSize * 3;
 bool RenderCharacterPreview(uint8_t* buffer, size_t size,
                             CharacterPreview scene, float seconds);
+// Continuous instrument companion. Caller supplies accumulated active playback
+// seconds; repeat the same timestamp to freeze. No automatic seven-second exit.
+bool RenderMusicCompanion(uint8_t* buffer, size_t size, double seconds,
+                          CharacterPreview instrument = CharacterPreview::kShaker);
 // Cache contains the opaque guitar scene without the moving strumming paw.
 bool RenderGuitarBase(uint8_t* buffer, size_t size);
 // Buffers must be distinct and at least kCharacterBytes bytes long.

@@ -592,7 +592,7 @@ void EmoteEngine::CreateFallbackDiscLocked()
 
 void EmoteEngine::CommitMusicSceneLocked()
 {
-    const bool show_music = music_overlay_requested_.load();
+    const bool show_music = music_overlay_requested_.load() && !music_companion_visible_;
     music_overlay_visible_ = show_music;
     if (!show_music) {
         return;
@@ -742,7 +742,7 @@ void EmoteEngine::SetMusicArtwork(const uint16_t* background, int background_wid
     gfx_img_set_src(obj_img_music_background, &music_background_dsc_);
     gfx_img_set_src(obj_img_music_disc, &music_disc_dsc_);
     music_artwork_ready_ = true;
-    const bool show_music = music_overlay_requested_.load();
+    const bool show_music = music_overlay_requested_.load() && !music_companion_visible_;
     CommitMusicSceneLocked();
     if (show_music) {
         ESP_LOGI(TAG, "MUSIC_METRIC artwork commit overlay=1");
@@ -783,7 +783,7 @@ void EmoteEngine::CommitMusicFallback()
         return;
     }
     music_artwork_ready_ = true;
-    const bool show_music = music_overlay_requested_.load();
+    const bool show_music = music_overlay_requested_.load() && !music_companion_visible_;
     CommitMusicSceneLocked();
     Unlock();
     if (music_fallback_timer_) {
@@ -837,7 +837,7 @@ void EmoteEngine::SetMusicOverlayVisible(bool visible)
         return;
     }
     music_overlay_requested_ = visible;
-    const bool actual_visible = visible && music_artwork_ready_.load();
+    const bool actual_visible = visible && music_artwork_ready_.load() && !music_companion_visible_;
     const bool visibility_changed =
         music_overlay_visible_.exchange(actual_visible) != actual_visible;
     if (visibility_changed) {
@@ -976,7 +976,7 @@ void EmoteEngine::MusicRotationTask(void* arg)
 
 void EmoteEngine::RotateMusicDisc()
 {
-    if (!music_scene_active_ || music_rotation_paused_) {
+    if (!music_scene_active_ || music_rotation_paused_ || music_companion_visible_) {
         return;
     }
     constexpr int size = 192;
@@ -984,7 +984,7 @@ void EmoteEngine::RotateMusicDisc()
     const int64_t started_us = esp_timer_get_time();
 
     Lock();
-    if (!music_scene_active_ || music_rotation_paused_ || music_rotation_busy_ ||
+    if (!music_scene_active_ || music_rotation_paused_ || music_companion_visible_ || music_rotation_busy_ ||
         !music_disc_source_ || !music_disc_frame_ || !music_disc_back_frame_) {
         Unlock();
         return;
@@ -1050,7 +1050,7 @@ void EmoteEngine::RotateMusicDisc()
     }
 
     Lock();
-    if (music_scene_active_ && !music_rotation_paused_ &&
+    if (music_scene_active_ && !music_rotation_paused_ && !music_companion_visible_ &&
         music_disc_source_ == source_bytes && music_disc_back_frame_ == output_bytes) {
         std::swap(music_disc_frame_, music_disc_back_frame_);
         music_disc_dsc_.data = music_disc_frame_;
@@ -1100,17 +1100,27 @@ void EmoteEngine::stopEyes()
 }
 
 #if CONFIG_ECHOEAR_CHARACTER_PREVIEW
-bool EmoteEngine::BeginCharacterPreview(CharacterPreview initial, bool guitar_cache)
+bool EmoteEngine::BeginCharacterPreview(CharacterPreview initial, bool guitar_cache,
+                                       bool companion, double seconds)
 {
-    if (!engine_handle_ || IsMusicSceneActive()) return false;
+    if (!engine_handle_ || (IsMusicSceneActive() && !companion)) return false;
+    if (companion) {
+        if (!IsMusicSceneActive()) return false;
+        music_companion_visible_ = true;
+        music_rotation_paused_ = true;
+        if (music_rotation_timer_) esp_timer_stop(music_rotation_timer_);
+        WaitForMusicRotationIdle();
+    }
     character_front_ = static_cast<uint8_t*>(heap_caps_malloc(kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     character_back_ = static_cast<uint8_t*>(heap_caps_malloc(kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!character_front_ || !character_back_) { EndCharacterPreview(); return false; }
     character_guitar_base_ = guitar_cache ? static_cast<uint8_t*>(heap_caps_malloc(kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) : nullptr;
+    character_guitar_cache_attempted_ = guitar_cache;
     if (character_guitar_base_) RenderGuitarBase(character_guitar_base_, kCharacterBytes);
     ESP_LOGI(TAG, "Character preview guitar_cache=%d cache_bytes=%u", character_guitar_base_ != nullptr,
              static_cast<unsigned>(character_guitar_base_ ? kCharacterBytes : 0));
-    RenderCharacterPreview(character_front_, kCharacterBytes, initial, 0);
+    if (companion) RenderMusicCompanion(character_front_, kCharacterBytes, seconds, initial);
+    else RenderCharacterPreview(character_front_, kCharacterBytes, initial, 0);
     character_descriptor_ = {};
     character_descriptor_.header.magic = C_ARRAY_HEADER_MAGIC;
     character_descriptor_.header.cf = GFX_COLOR_FORMAT_RGB565A8;
@@ -1122,6 +1132,12 @@ bool EmoteEngine::BeginCharacterPreview(CharacterPreview initial, bool guitar_ca
     Lock();
     character_image_ = gfx_img_create(engine_handle_);
     if (character_image_) {
+        if (companion) {
+            // Prepare the first frame before atomically retiring the cover.
+            music_overlay_requested_ = false;
+            music_overlay_visible_ = false;
+            SetMusicObjectsVisible(false);
+        }
         gfx_img_set_src(character_image_, &character_descriptor_);
         gfx_obj_align(character_image_, GFX_ALIGN_TOP_LEFT, 0, 0);
         gfx_anim_stop(obj_anim_eye);
@@ -1133,12 +1149,23 @@ bool EmoteEngine::BeginCharacterPreview(CharacterPreview initial, bool guitar_ca
     return true;
 }
 
-bool EmoteEngine::DrawCharacterPreview(CharacterPreview scene, float seconds)
+bool EmoteEngine::DrawCharacterPreview(CharacterPreview scene, double seconds)
 {
     if (!character_image_ || !character_back_) return false;
+    if (music_companion_visible_ && scene == CharacterPreview::kGuitar && !character_guitar_cache_attempted_) {
+        character_guitar_cache_attempted_ = true;
+        character_guitar_base_ = static_cast<uint8_t*>(heap_caps_malloc(kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (character_guitar_base_) RenderGuitarBase(character_guitar_base_, kCharacterBytes);
+        ESP_LOGI(TAG,"Companion guitar_cache=%d",character_guitar_base_ != nullptr);
+    }
     // Rasterize off-lock; graphics never reads the back buffer. Swap only when
     // the graphics task releases its lock, matching the music disc discipline.
-    const bool rendered = scene == CharacterPreview::kGuitar && character_guitar_base_
+    const bool rendered = music_companion_visible_
+        ? (scene == CharacterPreview::kGuitar && character_guitar_base_
+            ? RenderCachedGuitar(character_back_, kCharacterBytes, character_guitar_base_, kCharacterBytes,
+                                static_cast<float>(std::fmod(seconds,10.5)))
+            : RenderMusicCompanion(character_back_, kCharacterBytes, seconds, scene))
+        : scene == CharacterPreview::kGuitar && character_guitar_base_
         ? RenderCachedGuitar(character_back_, kCharacterBytes, character_guitar_base_, kCharacterBytes, seconds)
         : RenderCharacterPreview(character_back_, kCharacterBytes, scene, seconds);
     if (!rendered) return false;
@@ -1164,8 +1191,13 @@ void EmoteEngine::EndCharacterPreview()
     heap_caps_free(character_front_); heap_caps_free(character_back_);
     heap_caps_free(character_guitar_base_);
     character_guitar_base_ = nullptr;
+    character_guitar_cache_attempted_ = false;
     character_front_ = character_back_ = nullptr;
     character_descriptor_ = {};
+    // A failed companion allocation may leave the old cover on screen, but
+    // its rotation timer was stopped. Force the fallback to recommit/resume it.
+    if (music_companion_visible_) music_overlay_visible_ = false;
+    music_companion_visible_ = false;
 }
 #endif
 
@@ -1253,6 +1285,9 @@ void EmoteDisplay::StopLiveCharacter()
     if (!live_mutex_) return;
     xSemaphoreTake(live_mutex_, portMAX_DELAY);
     live_pose_.reset();
+    live_companion_ = false;
+    companion_advancing_ = false;
+    companion_clock_.SetRunning(esp_timer_get_time(), false);
     if (live_owns_preview_) {
         engine_->EndCharacterPreview();
         live_owns_preview_ = false;
@@ -1270,18 +1305,46 @@ void EmoteDisplay::LiveCharacterTask(void* arg)
         xSemaphoreTake(self->live_mutex_, portMAX_DELAY);
         if (self->live_pose_ && !self->expression_test_running_ && !self->live_failed_) {
             const auto scene = *self->live_pose_;
+            const int64_t now = esp_timer_get_time();
+            const double seconds = self->live_companion_
+                ? self->companion_clock_.Seconds(now)
+                : (now-self->live_started_us_)/1000000.0;
+            const bool submitted = !self->live_owns_preview_ || !self->live_companion_ || self->companion_advancing_ || self->companion_redraw_;
             if (!self->live_owns_preview_) {
-                self->live_owns_preview_ = self->engine_->BeginCharacterPreview(scene, false);
+                self->live_owns_preview_ = self->engine_->BeginCharacterPreview(
+                    scene, self->live_companion_ && scene == CharacterPreview::kGuitar, self->live_companion_, seconds);
                 failed = !self->live_owns_preview_;
             } else {
-                failed = !self->engine_->DrawCharacterPreview(scene,
-                    (esp_timer_get_time() - self->live_started_us_) / 1000000.f);
+                if (submitted)
+                    failed = !self->engine_->DrawCharacterPreview(scene, seconds);
             }
+            self->companion_redraw_ = false;
             if (failed) {
                 self->live_failed_ = true;
                 self->live_pose_.reset();
                 self->engine_->EndCharacterPreview();
                 self->live_owns_preview_ = false;
+            }
+            if (self->live_companion_ && submitted && !failed) {
+                const int64_t cost = esp_timer_get_time()-now;
+                ++self->companion_frames_;
+                self->companion_render_us_ += cost;
+                self->companion_max_us_ = std::max(self->companion_max_us_, cost);
+                const int64_t elapsed = esp_timer_get_time()-self->companion_stats_since_us_;
+                if (elapsed >= 10000000) {
+                    // NEWLIB_NANO_FORMAT does not support long-long formatting.
+                    // Saturate diagnostic counters, never narrow with wraparound.
+                    ESP_LOGI(TAG, "COMPANION_METRIC instrument=%u frames=%u elapsed_ms=%u avg_us=%u max_us=%u stack_free=%u psram=%u",
+                             static_cast<unsigned>(scene), static_cast<unsigned>(self->companion_frames_),
+                             static_cast<unsigned>(std::clamp<int64_t>(elapsed/1000, 0, UINT32_MAX)),
+                             static_cast<unsigned>(std::clamp<int64_t>(self->companion_render_us_/self->companion_frames_, 0, UINT32_MAX)),
+                             static_cast<unsigned>(std::clamp<int64_t>(self->companion_max_us_, 0, UINT32_MAX)),
+                             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+                             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+                    self->companion_stats_since_us_ = esp_timer_get_time();
+                    self->companion_frames_ = 0;
+                    self->companion_render_us_ = self->companion_max_us_ = 0;
+                }
             }
         }
         xSemaphoreGive(self->live_mutex_);
@@ -1399,7 +1462,8 @@ void EmoteDisplay::SetChatMessage(const char* role, const char* content)
     if (expression_test_running_) {
         return;
     }
-    if (engine_ && engine_->IsMusicSceneActive() && engine_->IsMusicOverlayVisible()) {
+    if (engine_ && engine_->IsMusicSceneActive() &&
+        (engine_->IsMusicOverlayVisible() || engine_->IsMusicCompanionVisible())) {
         return;
     }
     engine_->Lock();
@@ -1414,6 +1478,11 @@ void EmoteDisplay::EnterMusicScene(const MusicTrackInfo& track)
 {
 #if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
     StopLiveCharacter();
+    if (live_mutex_) {
+        xSemaphoreTake(live_mutex_, portMAX_DELAY);
+        companion_clock_.Reset(esp_timer_get_time());
+        xSemaphoreGive(live_mutex_);
+    }
 #endif
 #if CONFIG_ECHOEAR_CHARACTER_PREVIEW
     character_test_cancelled_ = true;
@@ -1488,6 +1557,9 @@ void EmoteDisplay::UpdateMusicProgress(int position_ms, int duration_ms)
 
 void EmoteDisplay::ExitMusicScene()
 {
+#if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+    StopLiveCharacter();
+#endif
 #if CONFIG_ECHOEAR_MUSIC_SCENE
     music_scene_behavior_ready_ = false;
     if (engine_) {
@@ -1570,6 +1642,37 @@ void EmoteDisplay::CharacterSerialTask(void* arg)
             continue;
         }
         line[length] = 0;
+#if CONFIG_ECHOEAR_MUSIC_COMPANION_TRIAL
+        std::optional<CharacterPreview> instrument;
+        if (!overflow) {
+            if (std::strcmp(line,"character-test companion-shaker")==0) instrument=CharacterPreview::kShaker;
+            else if (std::strcmp(line,"character-test companion-drum")==0) instrument=CharacterPreview::kDrum;
+            else if (std::strcmp(line,"character-test companion-keys")==0) instrument=CharacterPreview::kKeys;
+            else if (std::strcmp(line,"character-test companion-guitar")==0) instrument=CharacterPreview::kGuitar;
+        }
+        if (instrument) {
+            Application::GetInstance().Schedule([self, selected=*instrument]() {
+                if (!self->live_mutex_ || self->live_failed_ || self->expression_test_running_) {
+                    ESP_LOGI(TAG,"Character companion accepted=0");
+                    return;
+                }
+                xSemaphoreTake(self->live_mutex_,portMAX_DELAY);
+                self->companion_instrument_=selected;
+                if (self->live_companion_) {
+                    self->live_pose_=selected;
+                    self->companion_redraw_=true;
+                    self->companion_stats_since_us_=esp_timer_get_time();
+                    self->companion_frames_=0;
+                    self->companion_render_us_=self->companion_max_us_=0;
+                }
+                xSemaphoreGive(self->live_mutex_);
+                if (self->director_) self->director_->ForceRender();
+                ESP_LOGI(TAG,"Character companion accepted=1 instrument=%u",static_cast<unsigned>(selected));
+            });
+            length=0; overflow=false;
+            continue;
+        }
+#endif
         if (!overflow && std::strcmp(line, "character-test start") == 0) {
             Application::GetInstance().Schedule([self]() {
                 const bool accepted = self->StartExpressionTest();
@@ -1778,6 +1881,28 @@ void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
     }
 
 #if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+#if CONFIG_ECHOEAR_MUSIC_COMPANION_TRIAL
+    if (live_mutex_ && !live_failed_ && !expression_test_running_ &&
+        engine_->IsMusicSceneActive() && music_scene_behavior_ready_ &&
+        render_model.music_scene_visible) {
+        xSemaphoreTake(live_mutex_, portMAX_DELAY);
+        const int64_t now = esp_timer_get_time();
+        companion_clock_.SetRunning(now, render_model.music_animation_running);
+        if (!live_companion_ || companion_advancing_ != render_model.music_animation_running) {
+            companion_stats_since_us_ = now;
+            companion_frames_ = 0;
+            companion_render_us_ = companion_max_us_ = 0;
+        }
+        live_companion_ = true;
+        companion_advancing_ = render_model.music_animation_running;
+        live_pose_ = companion_instrument_;
+        ESP_LOGI(TAG, "Companion foreground running=%d elapsed_ms=%u",
+                 companion_advancing_, static_cast<unsigned>(std::clamp(
+                     companion_clock_.Seconds(now)*1000, 0.0, static_cast<double>(UINT32_MAX))));
+        xSemaphoreGive(live_mutex_);
+        return;
+    }
+#endif
     if (live_mutex_ && !live_failed_ && !expression_test_running_ &&
         !engine_->IsMusicSceneActive() && render_model.character_pose &&
         render_model.text.empty()) {

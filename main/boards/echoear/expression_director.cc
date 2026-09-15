@@ -40,7 +40,8 @@ bool ExpressionRenderModel::operator==(const ExpressionRenderModel& other) const
            ui_mode == other.ui_mode &&
            text == other.text &&
            music_scene_visible == other.music_scene_visible &&
-           character_pose == other.character_pose;
+           character_pose == other.character_pose &&
+           music_animation_running == other.music_animation_running;
 }
 
 ExpressionDirector::ExpressionDirector(RenderCallback render_callback)
@@ -638,7 +639,7 @@ ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavio
                 MMAP_EMOJI_NORMAL_ICON_WIFI_FAILED_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kMusicPlaying:
         return {MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text, true};
+                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text, true, {}, true};
     case DisplayBehavior::kMusicPaused:
         return {MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
                 MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text, true};

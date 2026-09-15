@@ -30,6 +30,7 @@ int main() {
         assert(shown.character_pose == CharacterPreview::kBubble);
         director.SetMediaBehavior({DisplayBehavior::kMusicPlaying, DisplayBehaviorSource::kMusic});
         assert(!shown.character_pose && shown.music_scene_visible);
+        assert(shown.music_animation_running);
         TestAdvance(10000);
         director.ClearMediaBehavior();
         director.NotifyUserInteraction();
@@ -69,6 +70,7 @@ int main() {
             director.SetMediaBehavior({media, DisplayBehaviorSource::kMusic});
             TestAdvance(200000);
             assert(!shown.character_pose && shown.music_scene_visible);
+            assert(!shown.music_animation_running);
             director.ClearMediaBehavior();
             director.NotifyUserInteraction();
         }
