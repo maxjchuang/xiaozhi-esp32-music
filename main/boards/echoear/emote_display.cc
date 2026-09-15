@@ -1252,7 +1252,7 @@ void EmoteDisplay::StopLiveCharacter()
 {
     if (!live_mutex_) return;
     xSemaphoreTake(live_mutex_, portMAX_DELAY);
-    live_pose_ = -1;
+    live_pose_.reset();
     if (live_owns_preview_) {
         engine_->EndCharacterPreview();
         live_owns_preview_ = false;
@@ -1268,8 +1268,8 @@ void EmoteDisplay::LiveCharacterTask(void* arg)
         const int64_t frame_start = esp_timer_get_time();
         bool failed = false;
         xSemaphoreTake(self->live_mutex_, portMAX_DELAY);
-        if (self->live_pose_ >= 0 && !self->expression_test_running_ && !self->live_failed_) {
-            const auto scene = self->live_pose_ == 0 ? CharacterPreview::kEyes : CharacterPreview::kWave;
+        if (self->live_pose_ && !self->expression_test_running_ && !self->live_failed_) {
+            const auto scene = *self->live_pose_;
             if (!self->live_owns_preview_) {
                 self->live_owns_preview_ = self->engine_->BeginCharacterPreview(scene, false);
                 failed = !self->live_owns_preview_;
@@ -1279,7 +1279,7 @@ void EmoteDisplay::LiveCharacterTask(void* arg)
             }
             if (failed) {
                 self->live_failed_ = true;
-                self->live_pose_ = -1;
+                self->live_pose_.reset();
                 self->engine_->EndCharacterPreview();
                 self->live_owns_preview_ = false;
             }
@@ -1392,6 +1392,10 @@ void EmoteDisplay::SetEmotion(const char* emotion)
 
 void EmoteDisplay::SetChatMessage(const char* role, const char* content)
 {
+    // An automatic transition into listening is not evidence of user input.
+    if (director_ && role && std::strcmp(role, "user") == 0 && content && *content) {
+        director_->NotifyUserInteraction();
+    }
     if (expression_test_running_) {
         return;
     }
@@ -1597,6 +1601,7 @@ void EmoteDisplay::CharacterSerialTask(void* arg)
 
 void EmoteDisplay::CancelExpressionTest()
 {
+    if (director_) director_->NotifyUserInteraction();
 #if CONFIG_ECHOEAR_CHARACTER_PREVIEW
     if (expression_test_running_) {
         ESP_LOGI(TAG, "Character preview cancel: explicit interaction");
@@ -1620,6 +1625,7 @@ bool EmoteDisplay::StartCharacterTest(CharacterTestSuite suite)
         return false;
     }
     character_test_suite_ = suite;
+    if (director_) director_->SetTheatreBlocked(true);
 
 #if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
     StopLiveCharacter();
@@ -1644,6 +1650,7 @@ bool EmoteDisplay::StartCharacterTest(CharacterTestSuite suite)
         0);
     if (result != pdPASS) {
         expression_test_running_ = false;
+        if (director_) director_->SetTheatreBlocked(false);
         ESP_LOGE(TAG, "Failed to create expression self-test task");
 #if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
         if (director_) director_->ForceRender();
@@ -1698,6 +1705,7 @@ void EmoteDisplay::RunExpressionTest()
     ESP_LOGI(TAG, "Character preview result completed=%u failed=%d", completed, failed);
     Application::GetInstance().Schedule([this]() {
         expression_test_running_ = false;
+        if (director_) director_->SetTheatreBlocked(false);
         if (director_) director_->ForceRender();
     });
     return;
@@ -1745,6 +1753,7 @@ void EmoteDisplay::RunExpressionTest()
         expression_test_running_ = false;
         ESP_LOGI(TAG, "Expression self-test finished; restoring live state");
         if (director_) {
+            director_->SetTheatreBlocked(false);
             director_->ForceRender();
         }
     });
@@ -1770,13 +1779,13 @@ void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
 
 #if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
     if (live_mutex_ && !live_failed_ && !expression_test_running_ &&
-        !engine_->IsMusicSceneActive() && render_model.character_pose >= 0 &&
-        render_model.character_pose <= 1 && render_model.text.empty()) {
+        !engine_->IsMusicSceneActive() && render_model.character_pose &&
+        render_model.text.empty()) {
         xSemaphoreTake(live_mutex_, portMAX_DELAY);
         if (live_pose_ != render_model.character_pose) {
             live_pose_ = render_model.character_pose;
             live_started_us_ = esp_timer_get_time();
-            ESP_LOGI(TAG, "Character live pose=%d", live_pose_);
+            ESP_LOGI(TAG, "Character live pose=%d", static_cast<int>(*live_pose_));
         }
         xSemaphoreGive(live_mutex_);
         return;

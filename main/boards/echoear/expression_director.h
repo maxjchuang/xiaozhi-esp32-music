@@ -8,6 +8,8 @@
 #include <string>
 
 #include "display/display_behavior.h"
+#include "character_preview.h"
+#include "idle_theatre.h"
 
 namespace anim {
 
@@ -29,8 +31,8 @@ struct ExpressionRenderModel {
     // scene to own the display. Higher-priority interaction states leave this
     // false so they can temporarily cover the music UI.
     bool music_scene_visible = false;
-    // Optional trial pose: -1 legacy resources, 0 capsule eyes, 1 greeting paw.
-    int character_pose = -1;
+    // No value means legacy resources; finite acts are ended by the director.
+    std::optional<CharacterPreview> character_pose;
 
     bool operator==(const ExpressionRenderModel& other) const;
 };
@@ -48,6 +50,8 @@ public:
     void PostTransientBehavior(const DisplayBehaviorRequest& request);
     void SetCloudEmotion(const char* emotion);
     void ForceRender();
+    void NotifyUserInteraction();
+    void SetTheatreBlocked(bool blocked);
 
 private:
     struct BehaviorState {
@@ -105,6 +109,10 @@ private:
     int64_t next_idle_motion_at_us_ = INT64_MAX;
     int last_idle_motion_index_ = -1;
     bool idle_sleeping_ = false;
+    IdleTheatre theatre_;
+    IdleTheatre::Output theatre_output_{TheatreAct::kNone, false, false, false, IdleTheatre::kNever};
+    bool theatre_blocked_ = false;
+    bool user_interaction_pending_ = false;
     esp_timer_handle_t timer_ = nullptr;
 };
 

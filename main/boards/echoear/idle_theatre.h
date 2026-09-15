@@ -8,7 +8,7 @@
 
 namespace anim {
 
-enum class TheatreMode { kOff, kQuiet, kLively };
+enum class TheatreMode { kOff, kEnabled };
 enum class TheatreAct { kNone, kChin, kBubble, kFish, kPeek, kRub };
 
 constexpr uint32_t TheatreDurationMs(TheatreAct act) {
@@ -47,7 +47,7 @@ public:
         const auto stop = [&]() {
             if (active_ != TheatreAct::kNone) {
                 active_ = TheatreAct::kNone;
-                cooldown_until_ = Add(now, 120000);
+                cooldown_until_ = Add(now, 60000);
                 stopped = true;
             }
             next_ = kNever;
@@ -86,11 +86,11 @@ public:
         if (newly_slow && active_ == TheatreAct::kNone) next_ = kNever;
         if (active_ == TheatreAct::kNone) {
             if (next_ == kNever) {
-                const uint64_t base = mode == TheatreMode::kQuiet ? 90000 : 45000;
+                constexpr uint64_t base = 30000;
                 const uint64_t delay = (base + Random() % (base + 1)) * (slow_ ? 2 : 1);
                 next_ = std::max(Add(now, delay), cooldown_until_);
             } else if (now >= next_) {
-                active_ = Pick(mode);
+                active_ = Pick();
                 previous_ = active_;
                 ends_ = Add(now, TheatreDurationMs(active_));
                 next_ = kNever;
@@ -106,10 +106,8 @@ public:
 private:
     static uint64_t Add(uint64_t a, uint64_t b) { return a > kNever-b ? kNever : a+b; }
     uint32_t Random() { return random_ ? random_() : 0; }
-    TheatreAct Pick(TheatreMode mode) {
-        const TheatreAct quiet[] = {TheatreAct::kChin, TheatreAct::kChin, TheatreAct::kBubble, TheatreAct::kFish};
-        const TheatreAct lively[] = {TheatreAct::kChin, TheatreAct::kBubble, TheatreAct::kFish, TheatreAct::kPeek};
-        const auto* pool = mode == TheatreMode::kQuiet ? quiet : lively;
+    TheatreAct Pick() {
+        const TheatreAct pool[] = {TheatreAct::kChin, TheatreAct::kChin, TheatreAct::kBubble, TheatreAct::kFish};
         TheatreAct candidates[4]; unsigned count = 0;
         for (unsigned i = 0; i < 4; ++i) if (pool[i] != previous_) candidates[count++] = pool[i];
         return candidates[Random() % count];

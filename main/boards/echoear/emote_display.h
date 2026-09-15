@@ -2,6 +2,7 @@
 
 #include "display/lcd_display.h"
 #include <memory>
+#include <optional>
 #include <functional>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
@@ -158,7 +159,7 @@ private:
     TaskHandle_t live_task_ = nullptr;
     std::atomic<bool> live_shutdown_{false};
     std::atomic<bool> live_failed_{false};
-    int live_pose_ = -1; // protected by live_mutex_
+    std::optional<CharacterPreview> live_pose_; // protected by live_mutex_
     bool live_owns_preview_ = false;
     int64_t live_started_us_ = 0;
 #endif

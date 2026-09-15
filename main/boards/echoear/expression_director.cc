@@ -44,7 +44,7 @@ bool ExpressionRenderModel::operator==(const ExpressionRenderModel& other) const
 }
 
 ExpressionDirector::ExpressionDirector(RenderCallback render_callback)
-    : render_callback_(std::move(render_callback))
+    : render_callback_(std::move(render_callback)), theatre_([] { return esp_random(); })
 {
     const esp_timer_create_args_t timer_args = {
         .callback = TimerCallback,
@@ -121,6 +121,7 @@ void ExpressionDirector::ClearMediaBehavior()
 
 void ExpressionDirector::PostTransientBehavior(const DisplayBehaviorRequest& request)
 {
+    if (request.behavior == DisplayBehavior::kWakeAcknowledged) user_interaction_pending_ = true;
     const int duration_ms = request.duration_ms > 0 ? request.duration_ms : 1000;
     const int priority = GetPriority(request.behavior);
     const int64_t now = esp_timer_get_time();
@@ -180,6 +181,18 @@ void ExpressionDirector::ForceRender()
     Recompute("force_render");
 }
 
+void ExpressionDirector::NotifyUserInteraction()
+{
+    user_interaction_pending_ = true;
+    Recompute("user_input");
+}
+
+void ExpressionDirector::SetTheatreBlocked(bool blocked)
+{
+    theatre_blocked_ = blocked;
+    Recompute("theatre_block");
+}
+
 void ExpressionDirector::TimerCallback(void* arg)
 {
     static_cast<ExpressionDirector*>(arg)->OnTimer();
@@ -236,14 +249,24 @@ void ExpressionDirector::Recompute(const char* reason)
         !media_behavior_.has_value() &&
         !transient_behavior_.has_value() &&
         !cloud_emotion_.has_value()) {
-        if (idle_sleeping_) {
+        if (theatre_output_.act != TheatreAct::kNone) {
+            switch (theatre_output_.act) {
+            case TheatreAct::kChin: next_render_model.character_pose = CharacterPreview::kChin; break;
+            case TheatreAct::kBubble: next_render_model.character_pose = CharacterPreview::kBubble; break;
+            case TheatreAct::kFish: next_render_model.character_pose = CharacterPreview::kFish; break;
+            case TheatreAct::kPeek: next_render_model.character_pose = CharacterPreview::kPeek; break;
+            case TheatreAct::kRub: next_render_model.character_pose = CharacterPreview::kRub; break;
+            default: break;
+            }
+            selected_source = "idle_theatre";
+        } else if (idle_sleeping_) {
             next_render_model = {MMAP_EMOJI_NORMAL_SLEEP_EAF, true, 16,
                                  MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN,
                                  ExpressionUiMode::kImmersive};
             selected_source = "timer_sleep";
         } else if (idle_motion_.has_value()) {
             next_render_model = idle_motion_->render_model;
-            next_render_model.character_pose = 0;
+            next_render_model.character_pose = CharacterPreview::kEyes;
             selected_source = idle_motion_->name;
             selected_expires_at_us = idle_motion_->expires_at_us;
         }
@@ -254,7 +277,7 @@ void ExpressionDirector::Recompute(const char* reason)
         next_render_model = cloud_emotion_->render_model;
         if (base_behavior_.behavior == DisplayBehavior::kIdle &&
             (cloud_emotion_->name == "neutral" || cloud_emotion_->name == "idle" ||
-             cloud_emotion_->name == "relaxed")) next_render_model.character_pose = 0;
+             cloud_emotion_->name == "relaxed")) next_render_model.character_pose = CharacterPreview::kEyes;
         selected_source = "cloud";
         selected_expires_at_us = cloud_emotion_->expires_at_us;
     }
@@ -334,7 +357,11 @@ void ExpressionDirector::ScheduleNextDeadline()
     if (cloud_emotion_.has_value()) {
         next_deadline = std::min(next_deadline, cloud_emotion_->expires_at_us);
     }
-#if CONFIG_ECHOEAR_IDLE_MICRO_MOTIONS
+#if CONFIG_ECHOEAR_IDLE_THEATRE_TRIAL
+    if (theatre_output_.next_ms != IdleTheatre::kNever) {
+        next_deadline = std::min(next_deadline, static_cast<int64_t>(theatre_output_.next_ms * 1000));
+    }
+#elif CONFIG_ECHOEAR_IDLE_MICRO_MOTIONS
     if (IsIdleEligible()) {
         const int64_t sleep_at_us = idle_started_at_us_ +
             static_cast<int64_t>(CONFIG_ECHOEAR_IDLE_SLEEP_TIMEOUT_SECONDS) * 1000 * 1000;
@@ -408,7 +435,21 @@ int64_t ExpressionDirector::GetRandomIdleIntervalUs() const
 
 void ExpressionDirector::UpdateIdleState(int64_t now)
 {
-#if CONFIG_ECHOEAR_IDLE_MICRO_MOTIONS
+#if CONFIG_ECHOEAR_IDLE_THEATRE_TRIAL
+    const bool eligible = timer_ != nullptr && !theatre_blocked_ &&
+        base_behavior_.behavior == DisplayBehavior::kIdle && base_behavior_.detail.empty() &&
+        !media_behavior_ && !transient_behavior_ && !cloud_emotion_;
+    const auto mode = TheatreMode::kEnabled;
+    theatre_output_ = theatre_.Tick(now / 1000, mode, eligible, user_interaction_pending_);
+    user_interaction_pending_ = false;
+    idle_motion_.reset();
+    idle_sleeping_ = theatre_output_.sleepy;
+    if (theatre_output_.started || theatre_output_.stopped) {
+        ESP_LOGI(TAG, "Theatre act=%d started=%d stopped=%d sleepy=%d eligible=%d",
+                 static_cast<int>(theatre_output_.act), theatre_output_.started,
+                 theatre_output_.stopped, theatre_output_.sleepy, eligible);
+    }
+#elif CONFIG_ECHOEAR_IDLE_MICRO_MOTIONS
     if (!IsIdleEligible() || idle_sleeping_ || idle_motion_.has_value()) {
         return;
     }
@@ -569,10 +610,10 @@ ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavio
                 MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips, text};
     case DisplayBehavior::kIdle:
         return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive, text, false, 0};
+                MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive, text, false, CharacterPreview::kEyes};
     case DisplayBehavior::kWakeAcknowledged:
         return {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 20,
-                MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text, false, 1};
+                MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text, false, CharacterPreview::kWave};
     case DisplayBehavior::kListening:
         return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text};

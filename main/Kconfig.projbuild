@@ -348,6 +348,15 @@ config ECHOEAR_CHARACTER_LIVE_TRIAL
         experimental renderer. Listening, speech, sleep, errors and music
         retain their existing displays. Disable to restore all legacy poses.
 
+config ECHOEAR_IDLE_THEATRE_TRIAL
+    bool "Trial automatic idle character theatre"
+    default n
+    depends on ECHOEAR_CHARACTER_LIVE_TRIAL && ECHOEAR_EXPRESSION_DIRECTOR
+    help
+        Play occasional silent acts only while idle. Interaction and media
+        preempt immediately. Visual drowsiness uses ten minutes in this mode;
+        hardware sleep and battery shutdown remain unchanged.
+
 config ECHOEAR_CHARACTER_TEST_SERIAL
     bool "Enable USB serial character test commands (debug only)"
     default n
