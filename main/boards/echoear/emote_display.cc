@@ -20,6 +20,8 @@
 #include "display/lcd_display.h"
 #include "application.h"
 #include "expression_director.h"
+#include "music_companion_preferences.h"
+#include "settings.h"
 #include "mmap_generate_emoji_normal.h"
 #include "config.h"
 #include "gfx.h"
@@ -1250,6 +1252,13 @@ void EmoteEngine::OnFlush(gfx_handle_t handle, int x_start, int y_start,
 // EmoteDisplay implementation
 EmoteDisplay::EmoteDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t panel_io)
 {
+#if CONFIG_ECHOEAR_MUSIC_COMPANION_TRIAL
+    Settings preferences("music_view");
+    const auto saved=MusicCompanionPreferences::Decode(preferences.GetInt("selection",1));
+    companion_enabled_=saved.enabled;
+    companion_instrument_=saved.instrument;
+    ESP_LOGI(TAG,"Music view restored cat=%d instrument=%u",saved.enabled,static_cast<unsigned>(saved.instrument));
+#endif
     InitializeEngine(panel, panel_io);
 #if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
     live_mutex_ = xSemaphoreCreateMutex();
@@ -1405,6 +1414,53 @@ void EmoteDisplay::SetBehavior(const DisplayBehaviorRequest& request)
         director_->PostTransientBehavior(request);
     }
 
+}
+
+bool EmoteDisplay::SupportsMusicCompanionSettings() const
+{
+#if CONFIG_ECHOEAR_MUSIC_COMPANION_TRIAL
+    return live_mutex_ && !live_failed_;
+#else
+    return false;
+#endif
+}
+
+bool EmoteDisplay::ConfigureMusicCompanion(const std::string& mode,const std::string& instrument)
+{
+#if CONFIG_ECHOEAR_MUSIC_COMPANION_TRIAL
+    if(!SupportsMusicCompanionSettings()) return false;
+    xSemaphoreTake(live_mutex_,portMAX_DELAY);
+    MusicCompanionPreferences next{companion_enabled_.load(),companion_instrument_};
+    if(!next.Update(mode,instrument)) { xSemaphoreGive(live_mutex_); return false; }
+    // Commit one packed selection before changing runtime state. Unlike the
+    // generic Settings writer, report an NVS error instead of aborting playback.
+    nvs_handle_t handle=0;
+    auto result=nvs_open("music_view",NVS_READWRITE,&handle);
+    if(result==ESP_OK) {
+        int32_t previous=-1;
+        if(nvs_get_i32(handle,"selection",&previous)!=ESP_OK || previous!=next.Encode()) {
+            result=nvs_set_i32(handle,"selection",next.Encode());
+            if(result==ESP_OK) result=nvs_commit(handle);
+        }
+        nvs_close(handle);
+    }
+    if(result!=ESP_OK) {
+        ESP_LOGE(TAG,"Music view save failed: %s",esp_err_to_name(result));
+        xSemaphoreGive(live_mutex_); return false;
+    }
+    companion_enabled_=next.enabled;
+    companion_instrument_=next.instrument;
+    companion_redraw_=true;
+    companion_stats_since_us_=esp_timer_get_time();
+    companion_frames_=0;
+    companion_render_us_=companion_max_us_=0;
+    xSemaphoreGive(live_mutex_);
+    Application::GetInstance().Schedule([this]() { if(director_) director_->ForceRender(); });
+    ESP_LOGI(TAG,"Music view saved cat=%d instrument=%u",next.enabled,static_cast<unsigned>(next.instrument));
+    return true;
+#else
+    return false;
+#endif
 }
 
 void EmoteDisplay::SetEmotion(const char* emotion)
@@ -1882,7 +1938,7 @@ void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
 
 #if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
 #if CONFIG_ECHOEAR_MUSIC_COMPANION_TRIAL
-    if (live_mutex_ && !live_failed_ && !expression_test_running_ &&
+    if (companion_enabled_ && live_mutex_ && !live_failed_ && !expression_test_running_ &&
         engine_->IsMusicSceneActive() && music_scene_behavior_ready_ &&
         render_model.music_scene_visible) {
         xSemaphoreTake(live_mutex_, portMAX_DELAY);
@@ -1895,6 +1951,7 @@ void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
         }
         live_companion_ = true;
         companion_advancing_ = render_model.music_animation_running;
+        if (live_pose_ != companion_instrument_) companion_redraw_ = true;
         live_pose_ = companion_instrument_;
         ESP_LOGI(TAG, "Companion foreground running=%d elapsed_ms=%u",
                  companion_advancing_, static_cast<unsigned>(std::clamp(

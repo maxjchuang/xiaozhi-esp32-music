@@ -234,6 +234,19 @@
             });
     }
 
+    if (display && display->SupportsMusicCompanionSettings()) {
+        AddTool("self.music.set_companion_instrument",
+            "切换猫咪音乐陪伴的乐器并记住选择。用户说换成吉他、敲小鼓、弹小琴、摇沙锤时调用。"
+            "instrument 必须为 guitar、drum、keys、shaker。自动选择猫咪模式，不点歌、不停止或重播音乐；"
+            "未播放时设置下次播放偏好。成功后简短确认，不延长对话。",
+            PropertyList({Property("instrument",kPropertyTypeString)}),
+            [display](const PropertyList& properties) -> ReturnValue {
+                if(!display->ConfigureMusicCompanion("cat",properties["instrument"].value<std::string>()))
+                    return "{\"success\":false,\"message\":\"乐器无效、功能不可用或保存失败\"}";
+                return "{\"success\":true,\"message\":\"已保存乐器选择，将在音乐界面显示\"}";
+            });
+    }
+
     if (display && !display->GetTheme().empty()) {
          AddTool("self.screen.set_theme",
              "Set the theme of the screen. The theme can be `light` or `dark`.",
@@ -321,19 +334,28 @@
              });
  
          AddTool("self.music.set_display_mode",
-             "设置音乐播放时的显示模式。可以选择显示频谱或歌词，比如用户说‘打开频谱’或者‘显示频谱’，‘打开歌词’或者‘显示歌词’就设置对应的显示模式。\n"
+             "设置音乐播放时的显示模式。支持该功能的设备可用 cat（猫咪陪听）或 cover（封面和歌词），记住选择。用户说切换猫咪、显示封面时调用，不停止或重播音乐。也兼容 spectrum（频谱）与 lyrics（歌词）。\n"
              "参数:\n"
-             "  `mode`: 显示模式，可选值为 'spectrum'（频谱）或 'lyrics'（歌词）。\n"
+             "  `mode`: cat、cover、spectrum 或 lyrics。\n"
              "返回:\n"
              "  设置结果信息。",
              PropertyList({
                  Property("mode", kPropertyTypeString)//显示模式: "spectrum" 或 "lyrics"
              }),
-             [music](const PropertyList& properties) -> ReturnValue {
+             [music, display](const PropertyList& properties) -> ReturnValue {
                  auto mode_str = properties["mode"].value<std::string>();
                  
                  // 转换为小写以便比较
                  std::transform(mode_str.begin(), mode_str.end(), mode_str.begin(), ::tolower);
+                 if(mode_str=="cat" || mode_str=="cover") {
+                     if(!display || !display->SupportsMusicCompanionSettings() ||
+                        !display->ConfigureMusicCompanion(mode_str,""))
+                         return "{\"success\":false,\"message\":\"设备不支持或偏好保存失败\"}";
+                     return "{\"success\":true,\"message\":\"显示偏好已保存，将在音乐界面生效\"}";
+                 }
+                 if((mode_str=="lyrics" || mode_str=="歌词" || mode_str=="spectrum" || mode_str=="频谱") &&
+                    display && display->SupportsMusicCompanionSettings() && !display->ConfigureMusicCompanion("cover",""))
+                     return "{\"success\":false,\"message\":\"显示偏好保存失败\"}";
                  
                  if (mode_str == "spectrum" || mode_str == "频谱") {
                      // 设置为频谱显示模式
@@ -346,7 +368,7 @@
                      esp32_music->SetDisplayMode(Esp32Music::DISPLAY_MODE_LYRICS);
                      return "{\"success\": true, \"message\": \"已切换到歌词显示模式\"}";
                  } else {
-                     return "{\"success\": false, \"message\": \"无效的显示模式，请使用 'spectrum' 或 'lyrics'\"}";
+                     return "{\"success\": false, \"message\": \"无效的显示模式，请使用 cat、cover、spectrum 或 lyrics\"}";
                  }
                  
                  return "{\"success\": false, \"message\": \"设置显示模式失败\"}";

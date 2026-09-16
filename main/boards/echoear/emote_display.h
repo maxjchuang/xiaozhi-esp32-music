@@ -142,6 +142,8 @@ public:
     virtual bool SupportsExpressionTest() const override { return true; }
     virtual bool StartExpressionTest() override;
     void CancelExpressionTest() override;
+    bool SupportsMusicCompanionSettings() const override;
+    bool ConfigureMusicCompanion(const std::string& mode, const std::string& instrument) override;
     
     anim::EmoteEngine* GetEngine()
     {
@@ -170,6 +172,7 @@ private:
     bool live_companion_ = false;
     bool companion_redraw_ = false;
     CharacterPreview companion_instrument_ = CharacterPreview::kShaker;
+    std::atomic<bool> companion_enabled_{true};
     bool companion_advancing_ = false;
     MusicCompanionClock companion_clock_;
     int64_t companion_stats_since_us_ = 0;
