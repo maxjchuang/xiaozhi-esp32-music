@@ -45,6 +45,25 @@ AudioService::~AudioService() {
     }
 }
 
+void AudioService::RecreateInputResampler() {
+    if (codec_ == nullptr || codec_->input_sample_rate() == ESP_AUDIO_SAMPLE_RATE_16K) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(input_resampler_mutex_);
+    if (input_resampler_ != nullptr) {
+        esp_ae_rate_cvt_close(input_resampler_);
+        input_resampler_ = nullptr;
+    }
+
+    esp_ae_rate_cvt_cfg_t config = RATE_CVT_CFG(
+        codec_->input_sample_rate(), ESP_AUDIO_SAMPLE_RATE_16K, codec_->input_channels());
+    auto ret = esp_ae_rate_cvt_open(&config, &input_resampler_);
+    if (input_resampler_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to recreate input resampler, error code: %d", ret);
+    }
+}
+
 void AudioService::Initialize(AudioCodec* codec) {
     codec_ = codec;
     codec_->Start();
@@ -628,6 +647,37 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
     return true;
 }
 
+bool AudioService::PushPcmToPlaybackQueue(std::vector<int16_t>&& pcm, uint32_t media_position_ms,
+                                          bool wait) {
+    if (pcm.empty()) {
+        return true;
+    }
+
+    std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+    const uint32_t generation = playback_generation_;
+    if (audio_playback_queue_.size() >= MAX_PLAYBACK_TASKS_IN_QUEUE) {
+        if (!wait) {
+            return false;
+        }
+        audio_queue_cv_.wait(lock, [this, generation]() {
+            return service_stopped_.load() || generation != playback_generation_ ||
+                   audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
+        });
+    }
+    if (service_stopped_.load() || generation != playback_generation_) {
+        return false;
+    }
+
+    AudioTask task;
+    task.type = kAudioTaskTypeDecodeToPlaybackQueue;
+    task.media_position_ms = media_position_ms;
+    task.pcm = std::move(pcm);
+    playback_drained_notified_ = false;
+    audio_playback_queue_.push_back(std::move(task));
+    audio_queue_cv_.notify_all();
+    return true;
+}
+
 std::unique_ptr<AudioStreamPacket> AudioService::PopPacketFromSendQueue() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     if (audio_send_queue_.empty()) {
@@ -676,12 +726,7 @@ void AudioService::EnableWakeWordDetection(bool enable) {
             xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
             return;
         }
-        {
-            std::lock_guard<std::mutex> lock(input_resampler_mutex_);
-            if (input_resampler_ != nullptr) {
-                esp_ae_rate_cvt_reset(input_resampler_);
-            }
-        }
+        RecreateInputResampler();
         audio_engine_->EnableWakeWordDetection(true);
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
     } else {
@@ -715,12 +760,7 @@ void AudioService::EnableVoiceProcessing(bool enable) {
         }
         ResetDecoder();
         audio_input_need_warmup_ = true;
-        {
-            std::lock_guard<std::mutex> lock(input_resampler_mutex_);
-            if (input_resampler_ != nullptr) {
-                esp_ae_rate_cvt_reset(input_resampler_);
-            }
-        }
+        RecreateInputResampler();
         audio_engine_->EnableVoiceProcessing(true);
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
     } else {

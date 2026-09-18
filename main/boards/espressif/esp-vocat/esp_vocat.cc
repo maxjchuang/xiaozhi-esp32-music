@@ -5,7 +5,9 @@
 #include "config.h"
 #include "display/emote_display.h"
 #include "display/lcd_display.h"
+#include "esp32_music.h"
 #include "esp_video.h"
+#include "mcp_server.h"
 #include "wifi_board.h"
 
 #include <esp_log.h>
@@ -20,6 +22,8 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_st77916.h>
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include "bmi270_api.h"
 #include "esp_lcd_touch_cst816s.h"
@@ -457,6 +461,7 @@ private:
     Charge* charge_;
     Button boot_button_;
     Display* display_ = nullptr;
+    Esp32Music music_;
     PwmBacklight* backlight_ = nullptr;
     esp_timer_handle_t touchpad_timer_;
     esp_lcd_touch_handle_t tp;  // LCD touch handle
@@ -477,6 +482,98 @@ private:
     touch_slider_handle_t touch_slider_handle_ = nullptr;
     touch_button_handle_t touch_button_handle_ = nullptr;
 #endif
+
+    static bool IsPrivateIpv4(const std::string& address) {
+        int octets[4] = {};
+        size_t start = 0;
+        for (size_t index = 0; index < 4; ++index) {
+            const auto end = index == 3 ? address.size() : address.find('.', start);
+            if (end == std::string::npos || end <= start || end - start > 3)
+                return false;
+            int value = 0;
+            for (size_t cursor = start; cursor < end; ++cursor) {
+                const unsigned char ch = address[cursor];
+                if (!std::isdigit(ch))
+                    return false;
+                value = value * 10 + ch - '0';
+            }
+            if (value > 255)
+                return false;
+            octets[index] = value;
+            start = end + 1;
+        }
+        return octets[0] == 10 || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) ||
+               (octets[0] == 192 && octets[1] == 168);
+    }
+
+    static bool IsProxyUrl(const std::string& url, const std::string& resource) {
+        constexpr std::string_view prefix = "http://";
+        constexpr std::string_view marker = ":8765/media/";
+        if (url.size() > 2048 || url.compare(0, prefix.size(), prefix) != 0)
+            return false;
+        const auto marker_pos = url.find(marker, prefix.size());
+        if (marker_pos == std::string::npos)
+            return false;
+        const std::string resource_suffix = "/" + resource;
+        const auto resource_pos = url.find(resource_suffix, marker_pos + marker.size());
+        if (resource_pos == std::string::npos ||
+            resource_pos + resource_suffix.size() != url.size())
+            return false;
+        const auto token =
+            url.substr(marker_pos + marker.size(), resource_pos - marker_pos - marker.size());
+        if (token.size() < 16 || token.size() > 128 ||
+            !std::all_of(token.begin(), token.end(), [](unsigned char ch) {
+                return std::isalnum(ch) || ch == '-' || ch == '_';
+            }))
+            return false;
+        return IsPrivateIpv4(url.substr(prefix.size(), marker_pos - prefix.size()));
+    }
+
+    static bool IsApprovedAudioUrl(const std::string& url) {
+        constexpr std::string_view official = "https://dl.espressif.com/";
+        bool approved = url.compare(0, official.size(), official) == 0 || IsProxyUrl(url, "audio");
+        return approved && std::none_of(url.begin(), url.end(),
+                                        [](unsigned char ch) { return ch < 0x20 || ch == 0x7f; });
+    }
+
+    void InitializeTools() {
+        auto& server = McpServer::GetInstance();
+        server.AddTool(
+            "self.online_music.play_music",
+            "播放本机音乐 MCP 返回的 MP3。参数 url 是音频地址，url_song_name 是歌名，"
+            "metadata_url 是可选清单地址。调用成功后简短告知用户已开始播放。",
+            PropertyList(
+                {Property("play_type", kPropertyTypeString, "url"),
+                 Property("url", kPropertyTypeString).SetMaxLength(2048),
+                 Property("url_song_name", kPropertyTypeString).SetMaxLength(192),
+                 Property("metadata_url", kPropertyTypeString, std::string()).SetMaxLength(2048)}),
+            [this](const PropertyList& properties) -> ToolResult {
+                auto play_type = properties["play_type"].value<std::string>();
+                auto url = properties["url"].value<std::string>();
+                auto name = properties["url_song_name"].value<std::string>();
+                auto manifest = properties["metadata_url"].value<std::string>();
+                std::transform(play_type.begin(), play_type.end(), play_type.begin(),
+                               [](unsigned char ch) { return std::tolower(ch); });
+                if (play_type != "url")
+                    return std::unexpected("play_type must be url");
+                if (!IsApprovedAudioUrl(url))
+                    return std::unexpected("audio URL is not approved");
+                if (!manifest.empty() && !IsProxyUrl(manifest, "manifest.json"))
+                    return std::unexpected("metadata URL is invalid");
+                if (!music_.Play({url, name, manifest}))
+                    return std::unexpected("failed to start MP3 playback");
+                return std::string("{\"success\":true,\"message\":\"音频开始播放\"}");
+            });
+        server.AddTool(
+            "self.online_music.stop_music",
+            "立即停止当前音乐。用户说停止、暂停或别放了时直接调用。", PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                const bool active = music_.RequestStop();
+                return active
+                           ? std::string("{\"success\":true,\"message\":\"音乐已停止\"}")
+                           : std::string("{\"success\":true,\"message\":\"当前没有音乐在播放\"}");
+            });
+    }
 
     static void emotion_reset_timer_callback(void* arg) {
         auto* self = static_cast<EspVocat*>(arg);
@@ -1141,6 +1238,7 @@ public:
         InitializeSpi();
         InitializeSt77916Display(pcb_version);
         InitializeButtons();
+        InitializeTools();
 #if ESP_VOCAT_ENABLE_CAP_TOUCH_SENSOR
         InitializeCapacitiveTouchPads();
 #endif
@@ -1165,6 +1263,8 @@ public:
     virtual Backlight* GetBacklight() override { return backlight_; }
 
     virtual Camera* GetCamera() override { return camera_; }
+
+    virtual Music* GetMusic() override { return &music_; }
 
     virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
         if (charge_ == nullptr) {

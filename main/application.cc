@@ -7,6 +7,7 @@
 #include "display.h"
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
+#include "music.h"
 #include "settings.h"
 #include "system_info.h"
 #include "text_glyph_payload.h"
@@ -20,6 +21,14 @@
 #include <limits>
 
 #define TAG "Application"
+
+namespace {
+void RecordMusicSessionTelemetry(const std::string& type, const std::string& value = {}) {
+    if (auto* music = Board::GetInstance().GetMusic()) {
+        music->RecordSessionTelemetry(type, value);
+    }
+}
+}  // namespace
 
 Application::Application() : notify_player_(audio_service_) {
     event_group_ = xEventGroupCreate();
@@ -639,6 +648,7 @@ void Application::InitializeProtocol() {
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
+                    RecordMusicSessionTelemetry("assistant_response", text->valuestring);
                     std::vector<TextGlyph> glyphs;
                     uint8_t bpp = 0;
                     if (!TextGlyphPayload::Parse(root, glyphs, bpp)) {
@@ -655,6 +665,7 @@ void Application::InitializeProtocol() {
         } else if (strcmp(type->valuestring, "stt") == 0) {
             auto text = cJSON_GetObjectItem(root, "text");
             if (cJSON_IsString(text)) {
+                RecordMusicSessionTelemetry("user_utterance", text->valuestring);
                 std::vector<TextGlyph> glyphs;
                 uint8_t bpp = 0;
                 if (!TextGlyphPayload::Parse(root, glyphs, bpp)) {
@@ -708,10 +719,9 @@ void Application::InitializeProtocol() {
             if (cJSON_IsObject(payload)) {
                 CJsonStringUniquePtr payload_json(cJSON_PrintUnformatted(payload));
                 if (payload_json) {
-                    Schedule(
-                        [this, display, payload_str = std::string(payload_json.get())]() {
-                            display->SetChatMessage("system", payload_str.c_str());
-                        });
+                    Schedule([this, display, payload_str = std::string(payload_json.get())]() {
+                        display->SetChatMessage("system", payload_str.c_str());
+                    });
                 }
             } else {
                 ESP_LOGW(TAG, "Invalid custom message format: missing payload");
@@ -901,6 +911,7 @@ void Application::HandleWakeWordDetectedEvent() {
 
     auto state = GetDeviceState();
     auto wake_word = audio_service_.GetLastWakeWord();
+    RecordMusicSessionTelemetry("wake_detected", "wake_word");
     ESP_LOGI(TAG, "Wake word detected: %s (state: %d)", wake_word.c_str(), (int)state);
 
     if (state == kDeviceStateIdle) {
@@ -994,6 +1005,13 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
+    static DeviceState previous_state = kDeviceStateUnknown;
+    if (new_state == kDeviceStateListening) {
+        RecordMusicSessionTelemetry("listening_started");
+    } else if (previous_state == kDeviceStateListening) {
+        RecordMusicSessionTelemetry("listening_stopped");
+    }
+    previous_state = new_state;
     clock_ticks_ = 0;
     // Any state change invalidates a pending deferred listening start;
     // the Listening case below re-arms it when needed.
@@ -1265,6 +1283,7 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
 }
 
 void Application::WakeWordInvoke(const std::string& wake_word) {
+    RecordMusicSessionTelemetry("wake_detected", wake_word.empty() ? "touch" : "manual");
     if (!protocol_) {
         return;
     }

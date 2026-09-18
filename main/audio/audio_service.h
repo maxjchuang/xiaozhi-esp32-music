@@ -142,6 +142,11 @@ public:
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
+    // Queue PCM that has already been decoded and converted to the codec's native
+    // mono sample rate. This keeps local media on the same serialized speaker
+    // path as cloud TTS and notification audio.
+    bool PushPcmToPlaybackQueue(std::vector<int16_t>&& pcm, uint32_t media_position_ms = 0,
+                                bool wait = false);
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
@@ -149,6 +154,8 @@ public:
     void SetModelsList(srmodel_list_t* models_list);
 
 private:
+    void RecreateInputResampler();
+
     AudioCodec* codec_ = nullptr;
     AudioServiceCallbacks callbacks_;
     std::unique_ptr<AudioEngine> audio_engine_;
