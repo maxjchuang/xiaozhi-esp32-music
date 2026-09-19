@@ -92,6 +92,18 @@ class EspVocatMusicMigrationTests(unittest.TestCase):
         self.assertIn("action_request_.Tick(now, true, false)", display)
         self.assertIn('"self.screen.perform_cat_action"', mcp)
         self.assertIn('"self.music.set_companion_instrument"', mcp)
+        self.assertIn('"self.music.set_display_mode"', mcp)
+        self.assertIn("只在播放音乐时改变画面", mcp)
+        self.assertIn("不调整屏幕亮度", mcp)
+        self.assertIn("void VocatCatDisplay::ClearSubtitle()", display)
+        self.assertIn('gfx_label_set_text(label, "")', display)
+        self.assertIn("SetMusicCoverArtwork", display)
+        self.assertIn("MUSIC_COVER ready=1", display)
+
+        music = self.read("main/boards/common/esp32_music.cc")
+        self.assertIn("void Esp32Music::CoverTask", music)
+        self.assertIn("buffered_bytes_ >= kMaxBufferedBytes / 2", music)
+        self.assertIn("GetDeviceState() == kDeviceStateIdle", music)
 
     def test_cat_renderer_action_lifecycle_and_preferences(self):
         source = r'''

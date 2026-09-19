@@ -69,6 +69,8 @@ VocatCatDisplay::~VocatCatDisplay() {
         heap_caps_free(buffer);
         buffer = nullptr;
     }
+    heap_caps_free(cover_buffer_);
+    cover_buffer_ = nullptr;
 }
 
 void VocatCatDisplay::LoadAssets() {
@@ -141,11 +143,13 @@ void VocatCatDisplay::SetStatus(const char* status) {
     bool idle = false;
     if (status && std::strcmp(status, Lang::Strings::LISTENING) == 0) {
         scene = anim::CharacterPreview::kListen;
+        ClearSubtitle();
     } else if (status && std::strcmp(status, Lang::Strings::SPEAKING) == 0) {
         scene = anim::CharacterPreview::kSpeak;
     } else if (status && std::strcmp(status, Lang::Strings::STANDBY) == 0) {
         scene = CurrentBaseScene();
         idle = true;
+        ClearSubtitle();
     } else if (status && std::strcmp(status, Lang::Strings::ERROR) == 0) {
         scene = anim::CharacterPreview::kConfused;
     }
@@ -158,6 +162,21 @@ void VocatCatDisplay::SetStatus(const char* status) {
         action_request_.Cancel();
         xSemaphoreGive(state_mutex_);
     }
+}
+
+void VocatCatDisplay::ClearSubtitle() {
+    auto handle = GetEmoteHandle();
+    if (!handle) {
+        return;
+    }
+    auto* label = emote_get_obj_by_name(handle, EMT_DEF_ELEM_TOAST_LABEL);
+    if (!label) {
+        return;
+    }
+    emote_lock(handle);
+    gfx_label_set_text(label, "");
+    emote_notify_all_refresh(handle);
+    emote_unlock(handle);
 }
 
 void VocatCatDisplay::SetEmotion(const char* emotion) {
@@ -217,6 +236,43 @@ void VocatCatDisplay::SetMusicPlaybackActive(bool active) {
     ESP_LOGI(TAG, "CAT_COMPANION active=%d", active);
 }
 
+void VocatCatDisplay::SetMusicCoverArtwork(const uint16_t* pixels, int width, int height) {
+    cover_ready_ = false;
+    if (!pixels) {
+        return;
+    }
+    if (width != anim::kCharacterSize || height != anim::kCharacterSize) {
+        ESP_LOGW(TAG, "Ignoring music cover with unexpected size %dx%d", width, height);
+        return;
+    }
+    if (!cover_buffer_) {
+        cover_buffer_ = static_cast<uint8_t*>(
+            heap_caps_malloc(anim::kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!cover_buffer_) {
+            ESP_LOGE(TAG, "Unable to allocate music cover buffer");
+            return;
+        }
+        cover_descriptor_.header.magic = C_ARRAY_HEADER_MAGIC;
+        cover_descriptor_.header.cf = GFX_COLOR_FORMAT_RGB565A8;
+        cover_descriptor_.header.w = anim::kCharacterSize;
+        cover_descriptor_.header.h = anim::kCharacterSize;
+        cover_descriptor_.header.stride = anim::kCharacterSize * 2;
+        cover_descriptor_.data_size = anim::kCharacterBytes;
+        cover_descriptor_.data = cover_buffer_;
+    }
+    constexpr size_t kRgbBytes = anim::kCharacterSize * anim::kCharacterSize * sizeof(uint16_t);
+    const auto* source = reinterpret_cast<const uint8_t*>(pixels);
+    for (size_t offset = 0; offset < kRgbBytes; offset += sizeof(uint16_t)) {
+        // The JPEG decoder returns native little-endian RGB565. Emote's ST77916
+        // path swaps image bytes, matching the character renderer's byte order.
+        cover_buffer_[offset] = source[offset + 1];
+        cover_buffer_[offset + 1] = source[offset];
+    }
+    std::memset(cover_buffer_ + kRgbBytes, 255, anim::kCharacterSize * anim::kCharacterSize);
+    cover_ready_ = true;
+    ESP_LOGI(TAG, "MUSIC_COVER ready=1");
+}
+
 anim::CharacterPreview VocatCatDisplay::CurrentBaseScene() const {
     return static_cast<anim::CharacterPreview>(emotion_scene_.load());
 }
@@ -234,7 +290,9 @@ void VocatCatDisplay::RenderTask() {
         const auto preferences =
             anim::MusicCompanionPreferences::Decode(companion_preference_.load());
         anim::CharacterPreview scene = static_cast<anim::CharacterPreview>(status_scene_.load());
-        bool companion = music_active_ && preferences.enabled;
+        const bool music_active = music_active_.load();
+        const bool companion = music_active && preferences.enabled;
+        const bool cover = music_active && !preferences.enabled && cover_ready_.load();
 
         if (!companion && state_mutex_ &&
             xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -255,18 +313,22 @@ void VocatCatDisplay::RenderTask() {
                                    ? static_cast<double>(now - music_started_us_.load()) / 1000000.0
                                    : static_cast<double>(now) / 1000000.0;
         const bool rendered =
-            companion ? anim::RenderMusicCompanion(frame_buffers_[back], anim::kCharacterBytes,
-                                                   seconds, preferences.instrument)
-                      : anim::RenderCharacterPreview(frame_buffers_[back], anim::kCharacterBytes,
-                                                     scene, static_cast<float>(seconds));
+            cover ||
+            (companion ? anim::RenderMusicCompanion(frame_buffers_[back], anim::kCharacterBytes,
+                                                    seconds, preferences.instrument)
+                       : anim::RenderCharacterPreview(frame_buffers_[back], anim::kCharacterBytes,
+                                                      scene, static_cast<float>(seconds)));
         if (rendered && GetEmoteHandle() && character_image_) {
             emote_lock(GetEmoteHandle());
-            gfx_img_set_src(character_image_, &frame_descriptors_[back]);
+            gfx_img_set_src(character_image_,
+                            cover ? &cover_descriptor_ : &frame_descriptors_[back]);
             gfx_obj_set_visible(character_image_, true);
             emote_set_anim_visible(GetEmoteHandle(), false);
             emote_notify_all_refresh(GetEmoteHandle());
             emote_unlock(GetEmoteHandle());
-            back ^= 1;
+            if (!cover) {
+                back ^= 1;
+            }
             if (++frame_count == 100) {
                 ESP_LOGI(TAG, "CAT_RENDER stable frames=%u stack_free=%u", frame_count,
                          static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));

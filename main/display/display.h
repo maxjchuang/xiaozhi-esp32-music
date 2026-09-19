@@ -96,6 +96,11 @@ public:
         return false;
     }
     virtual void SetMusicPlaybackActive(bool active) { (void)active; }
+    virtual void SetMusicCoverArtwork(const uint16_t* pixels, int width, int height) {
+        (void)pixels;
+        (void)width;
+        (void)height;
+    }
 
     inline int width() const { return width_; }
     inline int height() const { return height_; }

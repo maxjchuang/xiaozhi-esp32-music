@@ -8,6 +8,7 @@
 #include <esp_log.h>
 #include <esp_pthread.h>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <iterator>
 #include <optional>
@@ -81,20 +82,35 @@ void McpServer::AddCommonTools() {
             "self.music.set_companion_instrument。",
             PropertyList({Property("action", kPropertyTypeString)}),
             [display](const PropertyList& properties) -> ReturnValue {
-                return display->RequestCharacterAction(
-                    properties["action"].value<std::string>());
+                return display->RequestCharacterAction(properties["action"].value<std::string>());
             });
     }
     if (display && display->SupportsMusicCompanionSettings()) {
-        AddTool(
-            "self.music.set_companion_instrument",
-            "切换猫咪音乐陪伴的乐器并记住选择。instrument 必须为 guitar、drum、keys、"
-            "shaker。该工具不点歌、不停止或重播音乐；未播放时会设置下次播放偏好。",
-            PropertyList({Property("instrument", kPropertyTypeString)}),
-            [display](const PropertyList& properties) -> ReturnValue {
-                return display->ConfigureMusicCompanion(
-                    "cat", properties["instrument"].value<std::string>());
-            });
+        AddTool("self.music.set_display_mode",
+                "设置音乐播放时的显示模式并记住选择。mode 必须为 cat（猫咪陪听）或 "
+                "cover（歌曲封面）。该设置只在播放音乐时改变画面；未播放音乐时保持正常"
+                "猫咪界面。该工具不调整屏幕亮度、不点歌，也不停止或重播音乐。",
+                PropertyList({Property("mode", kPropertyTypeString)}),
+                [display](const PropertyList& properties) -> ReturnValue {
+                    auto mode = properties["mode"].value<std::string>();
+                    std::transform(mode.begin(), mode.end(), mode.begin(),
+                                   [](unsigned char ch) { return std::tolower(ch); });
+                    if ((mode != "cat" && mode != "cover") ||
+                        !display->ConfigureMusicCompanion(mode, "")) {
+                        return std::string(
+                            "{\"success\":false,\"message\":\"无效模式，请使用 cat 或 cover\"}");
+                    }
+                    return std::string(
+                        "{\"success\":true,\"message\":\"显示偏好已保存，将在音乐播放界面生效\"}");
+                });
+        AddTool("self.music.set_companion_instrument",
+                "切换猫咪音乐陪伴的乐器并记住选择。instrument 必须为 guitar、drum、keys、"
+                "shaker。该工具不点歌、不停止或重播音乐；未播放时会设置下次播放偏好。",
+                PropertyList({Property("instrument", kPropertyTypeString)}),
+                [display](const PropertyList& properties) -> ReturnValue {
+                    return display->ConfigureMusicCompanion(
+                        "cat", properties["instrument"].value<std::string>());
+                });
     }
 
 #ifdef HAVE_LVGL

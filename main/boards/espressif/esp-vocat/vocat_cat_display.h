@@ -29,21 +29,26 @@ public:
     bool SupportsMusicCompanionSettings() const override { return true; }
     bool ConfigureMusicCompanion(const std::string& mode, const std::string& instrument) override;
     void SetMusicPlaybackActive(bool active) override;
+    void SetMusicCoverArtwork(const uint16_t* pixels, int width, int height) override;
 
 private:
     static void RenderTaskEntry(void* context);
     void RenderTask();
     void StopRenderer();
+    void ClearSubtitle();
     anim::CharacterPreview CurrentBaseScene() const;
 
     SemaphoreHandle_t state_mutex_ = nullptr;
     TaskHandle_t render_task_ = nullptr;
     gfx_obj_t* character_image_ = nullptr;
     uint8_t* frame_buffers_[2] = {nullptr, nullptr};
+    uint8_t* cover_buffer_ = nullptr;
     gfx_image_dsc_t frame_descriptors_[2] = {};
+    gfx_image_dsc_t cover_descriptor_ = {};
     anim::CharacterActionRequest action_request_;
     std::atomic<bool> stopping_{false};
     std::atomic<bool> music_active_{false};
+    std::atomic<bool> cover_ready_{false};
     std::atomic<bool> idle_{false};
     std::atomic<int> status_scene_{static_cast<int>(anim::CharacterPreview::kStartup)};
     std::atomic<int> emotion_scene_{static_cast<int>(anim::CharacterPreview::kEyes)};

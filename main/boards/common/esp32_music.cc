@@ -4,6 +4,7 @@
 #include "audio/audio_codec.h"
 #include "board.h"
 #include "display.h"
+#include "display/lvgl_display/jpg/jpeg_to_image.h"
 
 #include <algorithm>
 #include <array>
@@ -16,6 +17,7 @@
 #include <esp_audio_simple_dec.h>
 #include <esp_audio_simple_dec_default.h>
 #include <esp_heap_caps.h>
+#include <esp_jpeg_common.h>
 #include <esp_log.h>
 #include <esp_pthread.h>
 #include <esp_random.h>
@@ -140,11 +142,18 @@ bool Esp32Music::Play(const MusicPlaybackRequest& request) {
     ResetTelemetry(generation, request.metadata_url);
     playing_ = true;
     downloading_ = true;
+    if (auto* display = Board::GetInstance().GetDisplay()) {
+        display->SetMusicCoverArtwork(nullptr, 0, 0);
+    }
 
     ConfigureThread("music_download", 8192, 3);
     download_thread_ = std::thread(&Esp32Music::DownloadTask, this, generation, request.audio_url);
     ConfigureThread("music_playback", 12288, 4);
     playback_thread_ = std::thread(&Esp32Music::PlaybackTask, this, generation);
+    if (!request.metadata_url.empty()) {
+        ConfigureThread("music_cover", 8192, 3);
+        cover_thread_ = std::thread(&Esp32Music::CoverTask, this, generation, request.metadata_url);
+    }
     ESP_LOGI(TAG, "MUSIC_PLAY requested generation=%lu song=%s",
              static_cast<unsigned long>(generation), song_name_.c_str());
     return true;
@@ -177,10 +186,99 @@ void Esp32Music::StopAndJoin(bool terminal_event) {
     if (playback_thread_.joinable()) {
         playback_thread_.join();
     }
+    if (cover_thread_.joinable()) {
+        cover_thread_.join();
+    }
     if (terminal_event && active) {
         FinalizeTelemetry(old_generation, "playback_stopped", "user_stopped");
     }
     ClearBuffer();
+}
+
+void Esp32Music::CoverTask(uint32_t generation, std::string metadata_url) {
+    // The play tool first speaks a confirmation over the same Wi-Fi/audio path.
+    // Wait until that session has closed and the MP3 has a healthy lead so the
+    // optional artwork request cannot delay either TTS or playback startup.
+    while (generation == generation_ && playing_) {
+        bool audio_ready = false;
+        {
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+            audio_ready = buffered_bytes_ >= kMaxBufferedBytes / 2 || !downloading_;
+        }
+        if (audio_ready && Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (generation != generation_ || !playing_) {
+        return;
+    }
+    constexpr std::string_view kManifestSuffix = "manifest.json";
+    if (metadata_url.size() <= kManifestSuffix.size() ||
+        metadata_url.compare(metadata_url.size() - kManifestSuffix.size(), kManifestSuffix.size(),
+                             kManifestSuffix) != 0) {
+        return;
+    }
+    metadata_url.replace(metadata_url.size() - kManifestSuffix.size(), kManifestSuffix.size(),
+                         "background.jpg");
+    auto network = Board::GetInstance().GetNetwork();
+    auto http = network ? network->CreateHttp(0) : nullptr;
+    if (!http) {
+        return;
+    }
+    http->SetTimeout(10000);
+    http->SetHeader("Accept", "image/jpeg");
+    auto opened = http->Open("GET", metadata_url);
+    if (!opened) {
+        ESP_LOGW(TAG, "Music cover unavailable: %s", opened.error().ToString().c_str());
+        return;
+    }
+    auto status = http->GetStatusCode();
+    const size_t declared = http->GetBodyLength();
+    constexpr size_t kMaxCoverBytes = 512 * 1024;
+    if (!status || *status != 200 || declared > kMaxCoverBytes) {
+        http->Close();
+        return;
+    }
+    std::vector<uint8_t> jpeg;
+    jpeg.reserve(declared > 0 ? declared : 64 * 1024);
+    std::array<char, 4096> chunk;
+    while (generation == generation_ && playing_) {
+        auto count = http->Read(chunk.data(), chunk.size());
+        if (!count || *count == 0) {
+            break;
+        }
+        if (jpeg.size() + *count > kMaxCoverBytes) {
+            jpeg.clear();
+            break;
+        }
+        jpeg.insert(jpeg.end(), reinterpret_cast<uint8_t*>(chunk.data()),
+                    reinterpret_cast<uint8_t*>(chunk.data()) + *count);
+    }
+    http->Close();
+    if (jpeg.empty() || generation != generation_ || !playing_) {
+        return;
+    }
+    uint8_t* pixels = nullptr;
+    size_t output_size = 0;
+    size_t width = 0;
+    size_t height = 0;
+    size_t stride = 0;
+    if (jpeg_to_image(jpeg.data(), jpeg.size(), &pixels, &output_size, &width, &height, &stride) !=
+            ESP_OK ||
+        width != 360 || height != 360 || stride != 720 || output_size < 360 * 360 * 2) {
+        if (pixels) {
+            jpeg_free_align(pixels);
+        }
+        ESP_LOGW(TAG, "Music cover decode failed or returned unexpected dimensions");
+        return;
+    }
+    if (generation == generation_ && playing_) {
+        if (auto* display = Board::GetInstance().GetDisplay()) {
+            display->SetMusicCoverArtwork(reinterpret_cast<uint16_t*>(pixels), width, height);
+        }
+    }
+    jpeg_free_align(pixels);
 }
 
 void Esp32Music::ClearBuffer() {

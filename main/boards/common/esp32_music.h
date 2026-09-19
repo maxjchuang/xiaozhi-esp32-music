@@ -37,6 +37,7 @@ private:
 
     void DownloadTask(uint32_t generation, std::string url);
     void PlaybackTask(uint32_t generation);
+    void CoverTask(uint32_t generation, std::string metadata_url);
     void StopAndJoin(bool terminal_event);
     void ClearBuffer();
     bool RecreateDecoder();
@@ -52,6 +53,7 @@ private:
     std::atomic<int64_t> played_ms_{0};
     std::thread download_thread_;
     std::thread playback_thread_;
+    std::thread cover_thread_;
     std::deque<std::vector<uint8_t>> chunks_;
     size_t buffered_bytes_ = 0;
     mutable std::mutex buffer_mutex_;
