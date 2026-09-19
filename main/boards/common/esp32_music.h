@@ -1,152 +1,76 @@
 #ifndef ESP32_MUSIC_H
 #define ESP32_MUSIC_H
 
-#include <string>
-#include <thread>
-#include <atomic>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
-#include <vector>
-
 #include "music.h"
 
-// MP3解码器支持
-extern "C" {
-#include "mp3dec.h"
-}
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
-// 音频数据块结构
-struct AudioChunk {
-    uint8_t* data;
-    size_t size;
-    
-    AudioChunk() : data(nullptr), size(0) {}
-    AudioChunk(uint8_t* d, size_t s) : data(d), size(s) {}
-};
-
-struct PendingSessionTelemetry {
-    std::string session_id;
-    std::string event_type;
-    std::string value;
-    int64_t monotonic_ms;
-    uint32_t sequence;
-};
-
-class Esp32Music : public Music {
-public:
-    // 显示模式控制 - 移动到public区域
-    enum DisplayMode {
-        DISPLAY_MODE_SPECTRUM = 0,  // 默认显示频谱
-        DISPLAY_MODE_LYRICS = 1     // 显示歌词
-    };
-
-private:
-    std::string last_downloaded_data_;
-    std::string current_music_url_;
-    std::string current_song_name_;
-    bool song_name_displayed_;
-    
-    // 歌词相关
-    std::string current_lyric_url_;
-    std::vector<std::pair<int, std::string>> lyrics_;  // 时间戳和歌词文本
-    std::mutex lyrics_mutex_;  // 保护lyrics_数组的互斥锁
-    std::atomic<int> current_lyric_index_;
-    std::thread lyric_thread_;
-    std::atomic<bool> is_lyric_running_;
-    std::thread metadata_thread_;
-    std::atomic<uint32_t> playback_generation_{0};
-    std::atomic<int> lyric_offset_ms_{600};
-    std::atomic<int> track_duration_ms_{0};
-    int last_progress_update_ms_ = -1;
-    
-    std::atomic<DisplayMode> display_mode_;
-    std::atomic<bool> is_playing_;
-    std::atomic<bool> is_downloading_;
-    std::thread play_thread_;
-    std::thread download_thread_;
-    std::atomic<int64_t> current_play_time_ms_{0};  // 当前播放时间(毫秒)
-    int64_t last_frame_time_ms_;    // 上一帧的时间戳
-    int total_frames_decoded_;      // 已解码的帧数
-
-    // 音频缓冲区
-    std::queue<AudioChunk> audio_buffer_;
-    std::mutex buffer_mutex_;
-    std::condition_variable buffer_cv_;
-    size_t buffer_size_;
-    static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;  // 256KB缓冲区（降低以减少brownout风险）
-    static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;   // 32KB最小播放缓冲（降低以减少brownout风险）
-    
-    // MP3解码器相关
-    HMP3Decoder mp3_decoder_;
-    MP3FrameInfo mp3_frame_info_;
-    bool mp3_decoder_initialized_;
-
-    // 播放遥测只在音频线程内累计，终止后由低优先级线程批量发送。
-    std::mutex telemetry_mutex_;
-    std::string telemetry_url_;
-    std::string telemetry_playback_id_;
-    std::string telemetry_boot_nonce_;
-    std::atomic<uint32_t> telemetry_sequence_{0};
-    std::atomic<int64_t> telemetry_started_ms_{-1};
-    std::atomic<uint32_t> telemetry_underrun_count_{0};
-    std::atomic<int64_t> telemetry_underrun_total_ms_{0};
-    std::atomic<bool> telemetry_finalized_{false};
-    std::atomic<bool> stream_failed_{false};
-    std::string stream_failure_reason_;
-    std::string telemetry_session_id_;
-    std::string telemetry_playback_session_id_;
-    std::vector<PendingSessionTelemetry> pending_session_telemetry_;
-    
-    // 私有方法
-    void DownloadAudioStream(const std::string& music_url, uint32_t generation);
-    void PlayAudioStream(uint32_t generation);
-    bool StartStreamingForGeneration(const std::string& music_url, uint32_t generation);
-    void ClearAudioBuffer();
-    bool InitializeMp3Decoder();
-    void CleanupMp3Decoder();
-    void ResetSampleRate();  // 重置采样率到原始值
-    
-    // 歌词相关私有方法
-    bool DownloadLyrics(const std::string& lyric_url);
-    bool ParseLyrics(const std::string& lyric_content);
-    void LyricDisplayThread();
-    void UpdateLyricDisplay(int64_t current_time_ms);
-    void LoadMetadata(uint32_t generation, const std::string& metadata_url);
-    void ResetTelemetry(uint32_t generation, const std::string& metadata_url);
-    void MarkTelemetryStarted(uint32_t generation);
-    void FinalizeTelemetry(uint32_t generation, const char* event_type,
-                           const char* end_reason);
-    
-    // ID3标签处理
-    size_t SkipId3Tag(uint8_t* data, size_t size);
-
-    int16_t* final_pcm_data_fft = nullptr;
-
+class Esp32Music final : public Music {
 public:
     Esp32Music();
-    ~Esp32Music();
+    ~Esp32Music() override;
 
-    virtual bool Download(const std::string& song_name, const std::string& artist_name) override;
-  
-    virtual std::string GetDownloadResult() override;
-    virtual bool PlayUrl(const std::string& music_url, const std::string& song_name) override;
-    virtual bool Play(const MusicPlaybackRequest& request) override;
-    
-    // 新增方法
-    virtual bool StartStreaming(const std::string& music_url) override;
-    virtual bool StopStreaming() override;  // 停止流式播放
-    virtual bool RequestStopStreaming() override;
-    virtual size_t GetBufferSize() const override { return buffer_size_; }
-    virtual bool IsPlaying() const override { return is_playing_; }
-    virtual bool IsDownloading() const override { return is_downloading_; }
-    virtual int16_t* GetAudioData() override { return final_pcm_data_fft; }
-    virtual void RecordSessionTelemetry(const std::string& event_type,
-                                        const std::string& value = "") override;
-    
-    // 显示模式控制方法
-    void SetDisplayMode(DisplayMode mode);
-    DisplayMode GetDisplayMode() const { return display_mode_.load(); }
+    bool Play(const MusicPlaybackRequest& request) override;
+    bool RequestStop() override;
+    bool IsPlaying() const override { return playing_.load(); }
+    void RecordSessionTelemetry(const std::string& event_type,
+                                const std::string& value = "") override;
+
+private:
+    struct SessionEvent {
+        std::string session_id;
+        std::string type;
+        std::string value;
+        int64_t monotonic_ms = 0;
+        uint32_t sequence = 0;
+    };
+
+    static constexpr size_t kMaxBufferedBytes = 256 * 1024;
+    static constexpr size_t kStartBufferedBytes = 32 * 1024;
+
+    void DownloadTask(uint32_t generation, std::string url);
+    void PlaybackTask(uint32_t generation);
+    void StopAndJoin(bool terminal_event);
+    void ClearBuffer();
+    bool RecreateDecoder();
+    void ResetTelemetry(uint32_t generation, const std::string& metadata_url);
+    void MarkTelemetryStarted(uint32_t generation);
+    void FinalizeTelemetry(uint32_t generation, const char* event_type, const char* end_reason);
+    std::vector<int16_t> ConvertToNativeMono(const int16_t* pcm, int sample_count, int channels,
+                                             int source_rate) const;
+
+    std::atomic<bool> playing_{false};
+    std::atomic<bool> downloading_{false};
+    std::atomic<uint32_t> generation_{0};
+    std::atomic<int64_t> played_ms_{0};
+    std::thread download_thread_;
+    std::thread playback_thread_;
+    std::deque<std::vector<uint8_t>> chunks_;
+    size_t buffered_bytes_ = 0;
+    mutable std::mutex buffer_mutex_;
+    std::condition_variable buffer_cv_;
+    void* decoder_ = nullptr;
+
+    std::string song_name_;
+    std::mutex telemetry_mutex_;
+    std::string telemetry_url_;
+    std::string playback_id_;
+    std::string playback_session_id_;
+    std::string session_id_;
+    std::string boot_nonce_;
+    std::vector<SessionEvent> pending_events_;
+    std::atomic<uint32_t> session_sequence_{0};
+    std::atomic<int64_t> started_ms_{-1};
+    std::atomic<uint32_t> underrun_count_{0};
+    std::atomic<int64_t> underrun_ms_{0};
+    std::atomic<bool> telemetry_finalized_{true};
 };
 
-#endif // ESP32_MUSIC_H
+#endif
