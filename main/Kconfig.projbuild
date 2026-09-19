@@ -329,24 +329,21 @@ config ECHOEAR_CLOUD_EMOTION
         Allow low-priority cloud emotion messages to enhance the idle display.
 
 config ECHOEAR_CHARACTER_PREVIEW
-    bool "Enable experimental EchoEar character rendering self-test"
-    default n
+    bool "Enable EchoEar cat renderer and self-test"
+    default y
     depends on ECHOEAR_EXPRESSION_DIRECTOR
     help
-        Replace only the expression self-test with capsule eyes, waving and
-        guitar previews. Normal expressions remain unchanged. Uses two PSRAM
-        RGB565A8 frames plus an optional static cache (about 1.11 MiB total)
-        during the test only. Disable to restore
-        the legacy asset self-test. Not the production character renderer.
+        Provide the cat renderer and full action self-test. Uses two PSRAM
+        RGB565A8 frames with an optional guitar cache. If disabled, EchoEar
+        uses the flash-resident static cat, never legacy eye animations.
 
 config ECHOEAR_CHARACTER_LIVE_TRIAL
-    bool "Trial capsule idle eyes and wake greeting paw"
-    default n
+    bool "Enable full-scene EchoEar cat animation"
+    default y
     depends on ECHOEAR_CHARACTER_PREVIEW
     help
-        Replace only idle micro motions and wake acknowledgement with the
-        experimental renderer. Listening, speech, sleep, errors and music
-        retain their existing displays. Disable to restore all legacy poses.
+        Animate startup, listening, thinking, speech, emotions and sleep with
+        the cat renderer. Disable to use the static cat safety fallback.
 
 config ECHOEAR_MUSIC_COMPANION_TRIAL
     bool "Trial continuous music companion instead of cover"

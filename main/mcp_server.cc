@@ -234,6 +234,20 @@
             });
     }
 
+    if (display && display->SupportsCharacterActions()) {
+        AddTool("self.screen.perform_cat_action",
+            "请求猫咪表演一段动作，不播放音乐，不修改音乐陪听偏好。"
+            "action: wave 挥爪、chin 托腮、rub 揉眼、bubble 吹泡泡、heart 比心、fish 捉鱼、"
+            "peek 躲猫猫、shaker 沙锤、drum 小鼓、keys 小琴、guitar 吉他。"
+            "仅简短确认，待对话结束后表演；新的交互会取消，30秒未开始则过期。"
+            "播放音乐期间换乐器应使用 set_companion_instrument，不调用此工具。",
+            PropertyList({Property("action",kPropertyTypeString)}),
+            [display](const PropertyList& properties) -> ReturnValue {
+                return display->RequestCharacterAction(properties["action"].value<std::string>())
+                    ? "{\"success\":true,\"message\":\"请求已排入检查，空闲时执行；不表示已完成表演\"}"
+                    : "{\"success\":false,\"message\":\"动作无效或当前忙碌\"}";
+            });
+    }
     if (display && display->SupportsMusicCompanionSettings()) {
         AddTool("self.music.set_companion_instrument",
             "切换猫咪音乐陪伴的乐器并记住选择。用户说换成吉他、敲小鼓、弹小琴、摇沙锤时调用。"

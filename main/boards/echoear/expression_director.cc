@@ -1,4 +1,5 @@
 #include "expression_director.h"
+#include "character_semantics.h"
 
 #include <algorithm>
 #include <cstring>
@@ -73,6 +74,7 @@ ExpressionDirector::~ExpressionDirector()
 
 void ExpressionDirector::SetBaseBehavior(const DisplayBehaviorRequest& request)
 {
+    if (request.behavior!=DisplayBehavior::kIdle) requested_sleepy_=false;
     const bool was_idle = base_behavior_.behavior == DisplayBehavior::kIdle;
     base_behavior_ = request;
     const int64_t now = esp_timer_get_time();
@@ -99,6 +101,8 @@ void ExpressionDirector::SetBaseBehavior(const DisplayBehaviorRequest& request)
 
 void ExpressionDirector::SetMediaBehavior(const DisplayBehaviorRequest& request)
 {
+    requested_sleepy_=false;
+    action_request_.Cancel();
     StopIdleTimeline();
     media_behavior_ = BehaviorState{
         request,
@@ -122,6 +126,9 @@ void ExpressionDirector::ClearMediaBehavior()
 
 void ExpressionDirector::PostTransientBehavior(const DisplayBehaviorRequest& request)
 {
+    if (request.behavior == DisplayBehavior::kWakeAcknowledged ||
+        request.behavior == DisplayBehavior::kRecoverableError ||
+        request.behavior == DisplayBehavior::kFatalError) action_request_.Cancel();
     if (request.behavior == DisplayBehavior::kWakeAcknowledged) user_interaction_pending_ = true;
     const int duration_ms = request.duration_ms > 0 ? request.duration_ms : 1000;
     const int priority = GetPriority(request.behavior);
@@ -160,8 +167,8 @@ void ExpressionDirector::SetCloudEmotion(const char* emotion)
 
     auto render_model = GetEmotionRenderModel(emotion);
     if (!render_model.has_value()) {
-        ESP_LOGW(TAG, "Unknown cloud emotion ignored: %s", emotion);
-        return;
+        ESP_LOGW(TAG, "Unknown cloud emotion uses neutral cat: %s", emotion);
+        render_model=GetEmotionRenderModel("neutral");
     }
 
     const int64_t now = esp_timer_get_time();
@@ -184,12 +191,15 @@ void ExpressionDirector::ForceRender()
 
 void ExpressionDirector::NotifyUserInteraction()
 {
+    requested_sleepy_=false;
+    action_request_.Cancel();
     user_interaction_pending_ = true;
     Recompute("user_input");
 }
 
 void ExpressionDirector::SetTheatreBlocked(bool blocked)
 {
+    if (blocked) action_request_.Cancel();
     theatre_blocked_ = blocked;
     Recompute("theatre_block");
 }
@@ -197,6 +207,19 @@ void ExpressionDirector::SetTheatreBlocked(bool blocked)
 void ExpressionDirector::TimerCallback(void* arg)
 {
     static_cast<ExpressionDirector*>(arg)->OnTimer();
+}
+
+bool ExpressionDirector::RequestCharacterAction(const char* name)
+{
+    if (!timer_ || theatre_blocked_ || media_behavior_ ||
+        base_behavior_.behavior==DisplayBehavior::kFatalError) return false;
+    if (!action_request_.Queue(name,esp_timer_get_time())) return false;
+    requested_sleepy_=false;
+    cloud_emotion_.reset();
+    user_interaction_pending_=true;
+    ESP_LOGI(TAG,"Character action queued name=%s",name);
+    Recompute("action_request");
+    return true;
 }
 
 void ExpressionDirector::OnTimer()
@@ -257,6 +280,7 @@ void ExpressionDirector::Recompute(const char* reason)
             case TheatreAct::kFish: next_render_model.character_pose = CharacterPreview::kFish; break;
             case TheatreAct::kPeek: next_render_model.character_pose = CharacterPreview::kPeek; break;
             case TheatreAct::kRub: next_render_model.character_pose = CharacterPreview::kRub; break;
+            case TheatreAct::kHeart: next_render_model.character_pose = CharacterPreview::kHeart; break;
             default: break;
             }
             selected_source = "idle_theatre";
@@ -321,6 +345,20 @@ void ExpressionDirector::Recompute(const char* reason)
         selected_expires_at_us = transient_behavior_->expires_at_us;
     }
 
+    const auto action=action_request_.Tick(now,
+        base_behavior_.behavior==DisplayBehavior::kIdle && next_priority<=kPriorityEmotion &&
+        !media_behavior_ && !theatre_blocked_,
+        media_behavior_.has_value() || theatre_blocked_ || next_priority==kPriorityCritical);
+    if (action_request_.Completed()==CharacterPreview::kRub) requested_sleepy_=true;
+    if (requested_sleepy_ && next_priority==kPriorityIdle)
+        next_render_model.character_pose=CharacterPreview::kSleepy;
+    if (action) {
+        next_render_model=GetRenderModel(DisplayBehavior::kIdle);
+        next_render_model.character_pose=*action;
+        selected_source="requested_action";
+    }
+    if (!next_render_model.character_pose && !next_render_model.music_scene_visible)
+        next_render_model.character_pose = CharacterForAsset(next_render_model.animation_asset_id);
     if (!active_render_model_.has_value() || !(*active_render_model_ == next_render_model)) {
         const bool preempt = active_render_model_.has_value() && next_priority > active_priority_;
         const int duration_ms = selected_expires_at_us == INT64_MAX
@@ -351,7 +389,7 @@ void ExpressionDirector::ScheduleNextDeadline()
         ESP_LOGE(TAG, "Failed to stop expression timer: %s", esp_err_to_name(stop_result));
     }
 
-    int64_t next_deadline = INT64_MAX;
+    int64_t next_deadline = action_request_.Deadline();
     if (transient_behavior_.has_value()) {
         next_deadline = std::min(next_deadline, transient_behavior_->expires_at_us);
     }
@@ -605,10 +643,10 @@ ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavio
     switch (behavior) {
     case DisplayBehavior::kStartup:
         return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips, text};
+                MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips, text, false, CharacterPreview::kStartup};
     case DisplayBehavior::kConnecting:
         return {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips, text};
+                MMAP_EMOJI_NORMAL_ICON_WIFI_BIN, ExpressionUiMode::kTips, text, false, CharacterPreview::kThink};
     case DisplayBehavior::kIdle:
         return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive, text, false, CharacterPreview::kEyes};
@@ -617,17 +655,17 @@ ExpressionRenderModel ExpressionDirector::GetRenderModel(DisplayBehavior behavio
                 MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text, false, CharacterPreview::kWave};
     case DisplayBehavior::kListening:
         return {MMAP_EMOJI_NORMAL_NEUTRAL_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text};
+                MMAP_EMOJI_NORMAL_ICON_MIC_BIN, ExpressionUiMode::kListening, text, false, CharacterPreview::kListen};
     case DisplayBehavior::kThinking:
     case DisplayBehavior::kToolRunning:
         return {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
+                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text, false, CharacterPreview::kThink};
     case DisplayBehavior::kMusicBuffering:
         return {MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
                 MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text, true};
     case DisplayBehavior::kSpeaking:
         return {MMAP_EMOJI_NORMAL_HAPPY_EAF, true, 20,
-                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
+                MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text, false, CharacterPreview::kSpeak};
     case DisplayBehavior::kSuccess:
         return {MMAP_EMOJI_NORMAL_WINKING_EAF, false, 20,
                 MMAP_EMOJI_NORMAL_ICON_SPEAKER_ZZZ_BIN, ExpressionUiMode::kTips, text};
@@ -680,7 +718,11 @@ std::optional<ExpressionRenderModel> ExpressionDirector::GetEmotionRenderModel(c
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_SHOCKED_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }
-    if (std::strcmp(emotion, "thinking") == 0 || std::strcmp(emotion, "embarrassed") == 0) {
+    if (std::strcmp(emotion, "thinking") == 0) {
+        return ExpressionRenderModel{MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
+            MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive, {}, false, CharacterPreview::kThink};
+    }
+    if (std::strcmp(emotion, "embarrassed") == 0) {
         return ExpressionRenderModel{MMAP_EMOJI_NORMAL_CONFUSED_EAF, true, 20,
                                      MMAP_EMOJI_NORMAL_ICON_BATTERY_BIN, ExpressionUiMode::kImmersive};
     }

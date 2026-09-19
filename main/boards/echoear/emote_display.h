@@ -140,6 +140,8 @@ public:
     virtual void UpdateMusicProgress(int position_ms, int duration_ms) override;
     virtual void ExitMusicScene() override;
     virtual bool SupportsExpressionTest() const override { return true; }
+    bool SupportsCharacterActions() const override;
+    bool RequestCharacterAction(const std::string& name) override;
     virtual bool StartExpressionTest() override;
     void CancelExpressionTest() override;
     bool SupportsMusicCompanionSettings() const override;
