@@ -97,6 +97,13 @@ void VocatCatDisplay::LoadAssets() {
         return;
     }
 
+    // The cat renderer owns all full-screen state and emotion visuals. Keep the
+    // legacy eye/listen animations disabled; their opaque backgrounds otherwise
+    // flash over the cat or leave a mismatched rectangle while listening.
+    emote_set_obj_visible(GetEmoteHandle(), EMT_DEF_ELEM_EYE_ANIM, false);
+    emote_set_obj_visible(GetEmoteHandle(), EMT_DEF_ELEM_LISTEN_ANIM, false);
+    emote_set_obj_visible(GetEmoteHandle(), EMT_DEF_ELEM_EMERG_DLG, false);
+
     for (auto*& buffer : frame_buffers_) {
         buffer = static_cast<uint8_t*>(
             heap_caps_malloc(anim::kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -129,7 +136,7 @@ void VocatCatDisplay::LoadAssets() {
 }
 
 void VocatCatDisplay::SetStatus(const char* status) {
-    EmoteDisplay::SetStatus(status);
+    ESP_LOGI(TAG, "SetStatus: %s", status ? status : "");
     anim::CharacterPreview scene = anim::CharacterPreview::kThink;
     bool idle = false;
     if (status && std::strcmp(status, Lang::Strings::LISTENING) == 0) {
@@ -154,7 +161,7 @@ void VocatCatDisplay::SetStatus(const char* status) {
 }
 
 void VocatCatDisplay::SetEmotion(const char* emotion) {
-    EmoteDisplay::SetEmotion(emotion);
+    ESP_LOGI(TAG, "SetEmotion: %s", emotion ? emotion : "");
     const auto scene = SceneForEmotion(emotion);
     emotion_scene_ = static_cast<int>(scene);
     if (idle_) {
