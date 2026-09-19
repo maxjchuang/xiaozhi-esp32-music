@@ -82,9 +82,10 @@ class EspVocatMusicMigrationTests(unittest.TestCase):
         self.assertIn("CharacterActionRequest", display_header)
         self.assertLess(
             display.index('"vocat_cat_character"'),
-            display.index('"vocat_cat_subtitle"'),
+            display.index("EmoteDisplay::LoadAssets();"),
         )
-        self.assertIn("gfx_label_set_text(subtitle_label_, content)", display)
+        self.assertNotIn("vocat_cat_subtitle", display)
+        self.assertIn("EmoteDisplay::SetChatMessage(role, content)", display)
         self.assertIn("action_request_.Tick(now, true, false)", display)
         self.assertIn('"self.screen.perform_cat_action"', mcp)
         self.assertIn('"self.music.set_companion_instrument"', mcp)

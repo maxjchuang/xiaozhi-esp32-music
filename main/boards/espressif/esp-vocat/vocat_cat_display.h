@@ -39,7 +39,6 @@ private:
     SemaphoreHandle_t state_mutex_ = nullptr;
     TaskHandle_t render_task_ = nullptr;
     gfx_obj_t* character_image_ = nullptr;
-    gfx_obj_t* subtitle_label_ = nullptr;
     uint8_t* frame_buffers_[2] = {nullptr, nullptr};
     gfx_image_dsc_t frame_descriptors_[2] = {};
     anim::CharacterActionRequest action_request_;

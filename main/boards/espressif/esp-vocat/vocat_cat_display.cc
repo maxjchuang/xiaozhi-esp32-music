@@ -72,10 +72,31 @@ VocatCatDisplay::~VocatCatDisplay() {
 }
 
 void VocatCatDisplay::LoadAssets() {
-    EmoteDisplay::LoadAssets();
-    if (render_task_ || !GetEmoteHandle() || !state_mutex_) {
+    if (render_task_ || !GetEmoteHandle()) {
         return;
     }
+
+    // Create the full-screen character before loading the standard Emote layout.
+    // The later-created toast label then stays above the character and retains the
+    // complete font loaded from the assets partition.
+    character_image_ =
+        emote_create_obj_by_type(GetEmoteHandle(), EMOTE_OBJ_TYPE_IMAGE, "vocat_cat_character");
+    if (!character_image_) {
+        ESP_LOGE(TAG, "Unable to create cat image layer");
+        EmoteDisplay::LoadAssets();
+        return;
+    }
+    emote_lock(GetEmoteHandle());
+    gfx_obj_set_size(character_image_, anim::kCharacterSize, anim::kCharacterSize);
+    gfx_obj_align(character_image_, GFX_ALIGN_CENTER, 0, 0);
+    gfx_obj_set_visible(character_image_, false);
+    emote_unlock(GetEmoteHandle());
+
+    EmoteDisplay::LoadAssets();
+    if (!state_mutex_) {
+        return;
+    }
+
     for (auto*& buffer : frame_buffers_) {
         buffer = static_cast<uint8_t*>(
             heap_caps_malloc(anim::kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -95,40 +116,6 @@ void VocatCatDisplay::LoadAssets() {
         descriptor.data_size = anim::kCharacterBytes;
         descriptor.data = frame_buffers_[i];
     }
-    character_image_ =
-        emote_create_obj_by_type(GetEmoteHandle(), EMOTE_OBJ_TYPE_IMAGE, "vocat_cat_character");
-    if (!character_image_) {
-        ESP_LOGE(TAG, "Unable to create cat image layer");
-        StopRenderer();
-        return;
-    }
-    emote_lock(GetEmoteHandle());
-    gfx_obj_set_size(character_image_, anim::kCharacterSize, anim::kCharacterSize);
-    gfx_obj_align(character_image_, GFX_ALIGN_CENTER, 0, 0);
-    gfx_obj_set_visible(character_image_, false);
-    emote_unlock(GetEmoteHandle());
-
-    // The character is a full-screen custom image created after Emote's built-in
-    // labels, so those labels are painted underneath it. Create a dedicated
-    // subtitle after the character to keep speech recognition and reply text on
-    // top of the cat scene.
-    subtitle_label_ =
-        emote_create_obj_by_type(GetEmoteHandle(), EMOTE_OBJ_TYPE_LABEL, "vocat_cat_subtitle");
-    if (!subtitle_label_) {
-        ESP_LOGE(TAG, "Unable to create cat subtitle layer");
-        StopRenderer();
-        return;
-    }
-    emote_lock(GetEmoteHandle());
-    gfx_obj_set_size(subtitle_label_, 320, 40);
-    gfx_obj_align(subtitle_label_, GFX_ALIGN_TOP_MID, 0, 40);
-    gfx_label_set_text_align(subtitle_label_, GFX_TEXT_ALIGN_CENTER);
-    gfx_label_set_long_mode(subtitle_label_, GFX_LABEL_LONG_SCROLL);
-    gfx_label_set_scroll_speed(subtitle_label_, 10);
-    gfx_label_set_scroll_loop(subtitle_label_, true);
-    gfx_label_set_text(subtitle_label_, "");
-    gfx_obj_set_visible(subtitle_label_, true);
-    emote_unlock(GetEmoteHandle());
 
     stopping_ = false;
     // Painter::Fill keeps scanline coverage and edge tables on its stack. Match the
@@ -177,15 +164,8 @@ void VocatCatDisplay::SetEmotion(const char* emotion) {
 
 void VocatCatDisplay::SetChatMessage(const char* role, const char* content) {
     EmoteDisplay::SetChatMessage(role, content);
-    if (GetEmoteHandle() && subtitle_label_ && content && content[0] != '\0') {
-        emote_lock(GetEmoteHandle());
-        gfx_label_set_text(subtitle_label_, content);
-        gfx_obj_set_visible(subtitle_label_, true);
-        emote_notify_all_refresh(GetEmoteHandle());
-        emote_unlock(GetEmoteHandle());
-        ESP_LOGI(TAG, "CAT_SUBTITLE role=%s bytes=%u", role ? role : "",
-                 static_cast<unsigned>(std::strlen(content)));
-    }
+    ESP_LOGI(TAG, "CAT_TEXT role=%s bytes=%u", role ? role : "",
+             static_cast<unsigned>(content ? std::strlen(content) : 0));
     if (role && std::strcmp(role, "user") == 0 && state_mutex_ &&
         xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(20)) == pdTRUE) {
         action_request_.Cancel();
