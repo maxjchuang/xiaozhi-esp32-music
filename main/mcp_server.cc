@@ -71,8 +71,33 @@ void McpServer::AddCommonTools() {
                 });
     }
 
-#ifdef HAVE_LVGL
     auto display = board.GetDisplay();
+    if (display && display->SupportsCharacterActions()) {
+        AddTool(
+            "self.screen.perform_cat_action",
+            "请求猫咪表演一段动作，不播放音乐，也不修改音乐陪伴偏好。action 可选 wave、chin、"
+            "rub、bubble、heart、fish、peek、shaker、drum、keys、guitar。动作会在设备空闲后"
+            "开始；新的交互会取消，30 秒未开始则过期。播放音乐期间换乐器应使用 "
+            "self.music.set_companion_instrument。",
+            PropertyList({Property("action", kPropertyTypeString)}),
+            [display](const PropertyList& properties) -> ReturnValue {
+                return display->RequestCharacterAction(
+                    properties["action"].value<std::string>());
+            });
+    }
+    if (display && display->SupportsMusicCompanionSettings()) {
+        AddTool(
+            "self.music.set_companion_instrument",
+            "切换猫咪音乐陪伴的乐器并记住选择。instrument 必须为 guitar、drum、keys、"
+            "shaker。该工具不点歌、不停止或重播音乐；未播放时会设置下次播放偏好。",
+            PropertyList({Property("instrument", kPropertyTypeString)}),
+            [display](const PropertyList& properties) -> ReturnValue {
+                return display->ConfigureMusicCompanion(
+                    "cat", properties["instrument"].value<std::string>());
+            });
+    }
+
+#ifdef HAVE_LVGL
     if (display && display->GetTheme() != nullptr) {
         AddTool("self.screen.set_theme",
                 "Set the theme of the screen. The theme can be `light` or `dark`.",

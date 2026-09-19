@@ -84,6 +84,18 @@ public:
         (void)quality;
         return false;
     }
+    virtual bool SupportsCharacterActions() const { return false; }
+    virtual bool RequestCharacterAction(const std::string& name) {
+        (void)name;
+        return false;
+    }
+    virtual bool SupportsMusicCompanionSettings() const { return false; }
+    virtual bool ConfigureMusicCompanion(const std::string& mode, const std::string& instrument) {
+        (void)mode;
+        (void)instrument;
+        return false;
+    }
+    virtual void SetMusicPlaybackActive(bool active) { (void)active; }
 
     inline int width() const { return width_; }
     inline int height() const { return height_; }

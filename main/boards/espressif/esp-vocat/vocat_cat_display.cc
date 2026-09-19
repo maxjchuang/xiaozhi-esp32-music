@@ -1,0 +1,305 @@
+#include "vocat_cat_display.h"
+
+#include "assets/lang_config.h"
+#include "music_companion_preferences.h"
+#include "settings.h"
+
+#include <algorithm>
+#include <cstring>
+
+#include <esp_heap_caps.h>
+#include <esp_log.h>
+#include <esp_timer.h>
+#include <expression_emote.h>
+
+namespace emote {
+namespace {
+
+constexpr int kFramePeriodMs = 100;
+constexpr char kSettingsNamespace[] = "cat_display";
+constexpr char kCompanionKey[] = "companion";
+const char* TAG = "VocatCatDisplay";
+
+anim::CharacterPreview SceneForEmotion(const char* emotion) {
+    if (!emotion) {
+        return anim::CharacterPreview::kEyes;
+    }
+    if (std::strcmp(emotion, "happy") == 0 || std::strcmp(emotion, "laughing") == 0) {
+        return anim::CharacterPreview::kHappy;
+    }
+    if (std::strcmp(emotion, "confused") == 0) {
+        return anim::CharacterPreview::kConfused;
+    }
+    if (std::strcmp(emotion, "thinking") == 0) {
+        return anim::CharacterPreview::kThink;
+    }
+    if (std::strcmp(emotion, "sleepy") == 0) {
+        return anim::CharacterPreview::kSleepy;
+    }
+    if (std::strcmp(emotion, "sad") == 0 || std::strcmp(emotion, "crying") == 0) {
+        return anim::CharacterPreview::kSad;
+    }
+    if (std::strcmp(emotion, "angry") == 0) {
+        return anim::CharacterPreview::kAngry;
+    }
+    if (std::strcmp(emotion, "surprised") == 0 || std::strcmp(emotion, "shocked") == 0) {
+        return anim::CharacterPreview::kSurprised;
+    }
+    return anim::CharacterPreview::kEyes;
+}
+
+}  // namespace
+
+VocatCatDisplay::VocatCatDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t panel_io,
+                                 int width, int height)
+    : EmoteDisplay(panel, panel_io, width, height) {
+    state_mutex_ = xSemaphoreCreateMutex();
+    Settings settings(kSettingsNamespace);
+    companion_preference_ =
+        anim::MusicCompanionPreferences::Decode(settings.GetInt(kCompanionKey, 1)).Encode();
+}
+
+VocatCatDisplay::~VocatCatDisplay() {
+    StopRenderer();
+    if (state_mutex_) {
+        vSemaphoreDelete(state_mutex_);
+        state_mutex_ = nullptr;
+    }
+    for (auto*& buffer : frame_buffers_) {
+        heap_caps_free(buffer);
+        buffer = nullptr;
+    }
+}
+
+void VocatCatDisplay::LoadAssets() {
+    EmoteDisplay::LoadAssets();
+    if (render_task_ || !GetEmoteHandle() || !state_mutex_) {
+        return;
+    }
+    for (auto*& buffer : frame_buffers_) {
+        buffer = static_cast<uint8_t*>(
+            heap_caps_malloc(anim::kCharacterBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!buffer) {
+            ESP_LOGE(TAG, "Unable to allocate cat frame buffers");
+            StopRenderer();
+            return;
+        }
+    }
+    for (int i = 0; i < 2; ++i) {
+        auto& descriptor = frame_descriptors_[i];
+        descriptor.header.magic = C_ARRAY_HEADER_MAGIC;
+        descriptor.header.cf = GFX_COLOR_FORMAT_RGB565A8;
+        descriptor.header.w = anim::kCharacterSize;
+        descriptor.header.h = anim::kCharacterSize;
+        descriptor.header.stride = anim::kCharacterSize * 2;
+        descriptor.data_size = anim::kCharacterBytes;
+        descriptor.data = frame_buffers_[i];
+    }
+    character_image_ =
+        emote_create_obj_by_type(GetEmoteHandle(), EMOTE_OBJ_TYPE_IMAGE, "vocat_cat_character");
+    if (!character_image_) {
+        ESP_LOGE(TAG, "Unable to create cat image layer");
+        StopRenderer();
+        return;
+    }
+    emote_lock(GetEmoteHandle());
+    gfx_obj_set_size(character_image_, anim::kCharacterSize, anim::kCharacterSize);
+    gfx_obj_align(character_image_, GFX_ALIGN_CENTER, 0, 0);
+    gfx_obj_set_visible(character_image_, false);
+    emote_unlock(GetEmoteHandle());
+
+    // The character is a full-screen custom image created after Emote's built-in
+    // labels, so those labels are painted underneath it. Create a dedicated
+    // subtitle after the character to keep speech recognition and reply text on
+    // top of the cat scene.
+    subtitle_label_ =
+        emote_create_obj_by_type(GetEmoteHandle(), EMOTE_OBJ_TYPE_LABEL, "vocat_cat_subtitle");
+    if (!subtitle_label_) {
+        ESP_LOGE(TAG, "Unable to create cat subtitle layer");
+        StopRenderer();
+        return;
+    }
+    emote_lock(GetEmoteHandle());
+    gfx_obj_set_size(subtitle_label_, 320, 40);
+    gfx_obj_align(subtitle_label_, GFX_ALIGN_TOP_MID, 0, 40);
+    gfx_label_set_text_align(subtitle_label_, GFX_TEXT_ALIGN_CENTER);
+    gfx_label_set_long_mode(subtitle_label_, GFX_LABEL_LONG_SCROLL);
+    gfx_label_set_scroll_speed(subtitle_label_, 10);
+    gfx_label_set_scroll_loop(subtitle_label_, true);
+    gfx_label_set_text(subtitle_label_, "");
+    gfx_obj_set_visible(subtitle_label_, true);
+    emote_unlock(GetEmoteHandle());
+
+    stopping_ = false;
+    // Painter::Fill keeps scanline coverage and edge tables on its stack. Match the
+    // validated EchoEar renderer's internal 16 KiB stack; an 8 KiB external stack
+    // corrupts return addresses during complex speaking/listening frames.
+    if (xTaskCreatePinnedToCore(RenderTaskEntry, "vocat_cat", 16 * 1024, this, 1, &render_task_,
+                                0) != pdPASS) {
+        render_task_ = nullptr;
+        ESP_LOGE(TAG, "Unable to start cat renderer");
+    }
+}
+
+void VocatCatDisplay::SetStatus(const char* status) {
+    EmoteDisplay::SetStatus(status);
+    anim::CharacterPreview scene = anim::CharacterPreview::kThink;
+    bool idle = false;
+    if (status && std::strcmp(status, Lang::Strings::LISTENING) == 0) {
+        scene = anim::CharacterPreview::kListen;
+    } else if (status && std::strcmp(status, Lang::Strings::SPEAKING) == 0) {
+        scene = anim::CharacterPreview::kSpeak;
+    } else if (status && std::strcmp(status, Lang::Strings::STANDBY) == 0) {
+        scene = CurrentBaseScene();
+        idle = true;
+    } else if (status && std::strcmp(status, Lang::Strings::ERROR) == 0) {
+        scene = anim::CharacterPreview::kConfused;
+    }
+    idle_ = idle;
+    status_scene_ = static_cast<int>(scene);
+    const bool new_interaction = status && std::strcmp(status, Lang::Strings::CONNECTING) == 0;
+    const bool error = status && std::strcmp(status, Lang::Strings::ERROR) == 0;
+    if ((new_interaction || error) && state_mutex_ &&
+        xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(20)) == pdTRUE) {
+        action_request_.Cancel();
+        xSemaphoreGive(state_mutex_);
+    }
+}
+
+void VocatCatDisplay::SetEmotion(const char* emotion) {
+    EmoteDisplay::SetEmotion(emotion);
+    const auto scene = SceneForEmotion(emotion);
+    emotion_scene_ = static_cast<int>(scene);
+    if (idle_) {
+        status_scene_ = static_cast<int>(scene);
+    }
+}
+
+void VocatCatDisplay::SetChatMessage(const char* role, const char* content) {
+    EmoteDisplay::SetChatMessage(role, content);
+    if (GetEmoteHandle() && subtitle_label_ && content && content[0] != '\0') {
+        emote_lock(GetEmoteHandle());
+        gfx_label_set_text(subtitle_label_, content);
+        gfx_obj_set_visible(subtitle_label_, true);
+        emote_notify_all_refresh(GetEmoteHandle());
+        emote_unlock(GetEmoteHandle());
+        ESP_LOGI(TAG, "CAT_SUBTITLE role=%s bytes=%u", role ? role : "",
+                 static_cast<unsigned>(std::strlen(content)));
+    }
+    if (role && std::strcmp(role, "user") == 0 && state_mutex_ &&
+        xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(20)) == pdTRUE) {
+        action_request_.Cancel();
+        xSemaphoreGive(state_mutex_);
+    }
+}
+
+bool VocatCatDisplay::RequestCharacterAction(const std::string& name) {
+    if (!state_mutex_ || xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return false;
+    }
+    const bool accepted =
+        !music_active_ && action_request_.Queue(name.c_str(), esp_timer_get_time());
+    xSemaphoreGive(state_mutex_);
+    ESP_LOGI(TAG, "CAT_ACTION request=%s accepted=%d", name.c_str(), accepted);
+    return accepted;
+}
+
+bool VocatCatDisplay::ConfigureMusicCompanion(const std::string& mode,
+                                              const std::string& instrument) {
+    auto preferences = anim::MusicCompanionPreferences::Decode(companion_preference_);
+    if (!preferences.Update(mode, instrument)) {
+        return false;
+    }
+    Settings settings(kSettingsNamespace, true);
+    settings.SetInt(kCompanionKey, preferences.Encode());
+    companion_preference_ = preferences.Encode();
+    ESP_LOGI(TAG, "CAT_COMPANION mode=%s instrument=%s encoded=%d", mode.c_str(),
+             instrument.c_str(), preferences.Encode());
+    return true;
+}
+
+void VocatCatDisplay::SetMusicPlaybackActive(bool active) {
+    if (music_active_.exchange(active) == active) {
+        return;
+    }
+    music_started_us_ = active ? esp_timer_get_time() : 0;
+    if (state_mutex_ && xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(20)) == pdTRUE) {
+        action_request_.Cancel();
+        xSemaphoreGive(state_mutex_);
+    }
+    ESP_LOGI(TAG, "CAT_COMPANION active=%d", active);
+}
+
+anim::CharacterPreview VocatCatDisplay::CurrentBaseScene() const {
+    return static_cast<anim::CharacterPreview>(emotion_scene_.load());
+}
+
+void VocatCatDisplay::RenderTaskEntry(void* context) {
+    static_cast<VocatCatDisplay*>(context)->RenderTask();
+}
+
+void VocatCatDisplay::RenderTask() {
+    int back = 0;
+    unsigned frame_count = 0;
+    std::optional<anim::CharacterPreview> active_action;
+    while (!stopping_) {
+        const int64_t now = esp_timer_get_time();
+        const auto preferences =
+            anim::MusicCompanionPreferences::Decode(companion_preference_.load());
+        anim::CharacterPreview scene = static_cast<anim::CharacterPreview>(status_scene_.load());
+        bool companion = music_active_ && preferences.enabled;
+
+        if (!companion && state_mutex_ &&
+            xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(10)) == pdTRUE) {
+            if (auto action = action_request_.Tick(now, true, false)) {
+                scene = *action;
+                if (!active_action || *active_action != *action) {
+                    ESP_LOGI(TAG, "CAT_ACTION started pose=%d", static_cast<int>(*action));
+                }
+                active_action = action;
+            } else if (active_action) {
+                ESP_LOGI(TAG, "CAT_ACTION finished pose=%d", static_cast<int>(*active_action));
+                active_action.reset();
+            }
+            xSemaphoreGive(state_mutex_);
+        }
+
+        const double seconds = companion
+                                   ? static_cast<double>(now - music_started_us_.load()) / 1000000.0
+                                   : static_cast<double>(now) / 1000000.0;
+        const bool rendered =
+            companion ? anim::RenderMusicCompanion(frame_buffers_[back], anim::kCharacterBytes,
+                                                   seconds, preferences.instrument)
+                      : anim::RenderCharacterPreview(frame_buffers_[back], anim::kCharacterBytes,
+                                                     scene, static_cast<float>(seconds));
+        if (rendered && GetEmoteHandle() && character_image_) {
+            emote_lock(GetEmoteHandle());
+            gfx_img_set_src(character_image_, &frame_descriptors_[back]);
+            gfx_obj_set_visible(character_image_, true);
+            emote_set_anim_visible(GetEmoteHandle(), false);
+            emote_notify_all_refresh(GetEmoteHandle());
+            emote_unlock(GetEmoteHandle());
+            back ^= 1;
+            if (++frame_count == 100) {
+                ESP_LOGI(TAG, "CAT_RENDER stable frames=%u stack_free=%u", frame_count,
+                         static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(kFramePeriodMs));
+    }
+    render_task_ = nullptr;
+    vTaskDelete(nullptr);
+}
+
+void VocatCatDisplay::StopRenderer() {
+    stopping_ = true;
+    for (int attempt = 0; render_task_ && attempt < 100; ++attempt) {
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    if (render_task_) {
+        vTaskDelete(render_task_);
+        render_task_ = nullptr;
+    }
+}
+
+}  // namespace emote

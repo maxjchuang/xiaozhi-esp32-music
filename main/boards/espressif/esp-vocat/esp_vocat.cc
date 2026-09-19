@@ -5,6 +5,7 @@
 #include "config.h"
 #include "display/emote_display.h"
 #include "display/lcd_display.h"
+#include "vocat_cat_display.h"
 #include "esp32_music.h"
 #include "esp_video.h"
 #include "mcp_server.h"
@@ -1111,7 +1112,7 @@ private:
         esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
 
 #if CONFIG_USE_EMOTE_MESSAGE_STYLE
-        display_ = new emote::EmoteDisplay(panel, panel_io, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        display_ = new emote::VocatCatDisplay(panel, panel_io, DISPLAY_WIDTH, DISPLAY_HEIGHT);
 #else
         display_ = new SpiLcdDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
                                      DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,

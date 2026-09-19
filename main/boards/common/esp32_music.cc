@@ -158,6 +158,11 @@ bool Esp32Music::RequestStop() {
     if (active) {
         ++generation_;
         buffer_cv_.notify_all();
+        Application::GetInstance().Schedule([]() {
+            if (auto* display = Board::GetInstance().GetDisplay()) {
+                display->SetMusicPlaybackActive(false);
+            }
+        });
         FinalizeTelemetry(stopped_generation, "playback_stopped", "user_stopped");
     }
     return active;
@@ -446,6 +451,7 @@ void Esp32Music::PlaybackTask(uint32_t generation) {
                     auto* display = Board::GetInstance().GetDisplay();
                     if (display &&
                         Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
+                        display->SetMusicPlaybackActive(true);
                         display->SetStatus("音乐播放中");
                         display->SetChatMessage("assistant", ("《" + title + "》").c_str());
                         display->SetEmotion("happy");
@@ -479,6 +485,7 @@ void Esp32Music::PlaybackTask(uint32_t generation) {
     app.Schedule([]() {
         auto* display = Board::GetInstance().GetDisplay();
         if (display && Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
+            display->SetMusicPlaybackActive(false);
             display->SetStatus("待命");
             display->SetChatMessage("system", "");
             display->SetEmotion("neutral");
