@@ -353,8 +353,44 @@ void DrawRemaining(Painter& p,const Matrix& screen,CharacterPreview scene,float 
 
 bool RenderFrame(uint8_t* buffer,size_t size,CharacterPreview scene,float seconds,bool base_only=false){
     if(!buffer||size<kCharacterBytes||!std::isfinite(seconds)||seconds<0)return false;
-    if(scene<CharacterPreview::kEyes||scene>CharacterPreview::kKeys)return false;
+    if(scene<CharacterPreview::kEyes||scene>CharacterPreview::kSurprised)return false;
     Painter p(buffer);const Matrix screen{.5f,0,0,.5f,0,0};
+    if(scene>=CharacterPreview::kStartup) {
+        // Same upright capsule/happy contours as the approved prototype.
+        // Continuous states never run the finite theatre's exit envelope.
+        if (scene==CharacterPreview::kThink && seconds>=3 && seconds<8) {
+            // One finite chin-rest during a long wait, never a repeated paw
+            // loop. Afterwards resume the sustained attentive thinking face.
+            DrawRemaining(p,screen,CharacterPreview::kChin,seconds-3);
+            return true;
+        }
+        const float t=std::fmod(seconds,120.f);
+        const float phase=std::fmod(t,4.5f);
+        const float blink=phase<.2f ? 1-.94f*std::sin(phase/.2f*pi) : 1;
+        float x=0,y=std::sin(t*1.3f),height=158,smile=0,asym=0;
+        switch(scene) {
+        case CharacterPreview::kStartup: height*=.08f+.92f*Ramp(seconds/.8f); break;
+        case CharacterPreview::kListen: height*=1.07f; y=0; break;
+        case CharacterPreview::kThink: x=28+5*std::sin(t*.7f); y=-20; height*=.88f; asym=5; break;
+        case CharacterPreview::kSpeak: { const float e=std::max(0.f,std::sin(t*7))*std::max(0.f,std::sin(t*2.2f)); height*=1+.055f*e; y-=3*e; break; }
+        case CharacterPreview::kHappy: smile=1; height=90; y=-9; break;
+        case CharacterPreview::kConfused: x=8; height*=.8f; asym=14; break;
+        case CharacterPreview::kSleepy: height=25; y=9; break;
+        case CharacterPreview::kSad: height=78; y=14; asym=5; break;
+        case CharacterPreview::kAngry: height=65; y=-3; break;
+        case CharacterPreview::kSurprised: height=184; y=-6; break;
+        default: break;
+        }
+        const float yaw=x/48;
+        for(int side:{-1,1}) {
+            const float scale=1+side*yaw*.065f;
+            p.EyeMood(screen.At(360+x+side*(118-std::abs(yaw)*6),338+y+side*asym).Scale(scale,scale),
+                      smile,height*blink);
+        }
+        if(scene==CharacterPreview::kThink) for(int i=0;i<3;i++)
+            p.Oval(screen,325+i*35,485,4,4,static_cast<int>(t*2)%3==i?ivory:0x526759);
+        return true;
+    }
     if(scene>=CharacterPreview::kChin) {
         DrawRemaining(p,screen,scene,std::min(seconds,CharacterPreviewDurationMs(scene)/1000.f));
         return true;

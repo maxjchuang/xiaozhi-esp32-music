@@ -102,10 +102,10 @@ int main() {
         assert(!resumed.sleepy && resumed.act == Act::kNone);
         assert(resumed.next_ms == 660001); // user interrupt retains cooldown
     }
-    // Four equiprobable slots retain chin's 2:1:1 weight.
+    // Six slots retain chin's double weight and include every quiet act.
     // The last act is removed before random selection.
-    unsigned counts[6]{};
-    for (uint32_t entropy = 0; entropy < 4; ++entropy) {
+    unsigned counts[7]{};
+    for (uint32_t entropy = 0; entropy < 6; ++entropy) {
         IdleTheatre quiet([entropy] { return entropy; });
         auto due = quiet.Tick(0, Mode::kEnabled, true).next_ms;
         ++counts[static_cast<unsigned>(quiet.Tick(due, Mode::kEnabled, true).act)];
@@ -113,7 +113,8 @@ int main() {
     assert(counts[static_cast<unsigned>(Act::kChin)] == 2);
     assert(counts[static_cast<unsigned>(Act::kBubble)] == 1);
     assert(counts[static_cast<unsigned>(Act::kFish)] == 1);
-    assert(counts[static_cast<unsigned>(Act::kPeek)] == 0);
+    assert(counts[static_cast<unsigned>(Act::kPeek)] == 1);
+    assert(counts[static_cast<unsigned>(Act::kHeart)] == 1);
     // Seeded stress: real interactions reset inactivity, but not history or
     // cooldown. Alternate mode/busy states and check invariants for 24h.
     uint32_t seed = 41;
@@ -133,7 +134,7 @@ int main() {
         if (r.started && r.act != Act::kRub) {
             assert(r.act != previous);
             assert(!has_ended || now >= ended+60000);
-            assert(mode == Mode::kEnabled && r.act != Act::kPeek);
+            assert(mode == Mode::kEnabled);
             previous = r.act;
             ++starts;
         }

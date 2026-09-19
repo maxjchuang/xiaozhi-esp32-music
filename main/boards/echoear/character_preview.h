@@ -4,7 +4,23 @@
 
 namespace anim {
 enum class CharacterPreview { kEyes, kWave, kGuitar, kBubble, kFish,
-                              kChin, kRub, kHeart, kPeek, kShaker, kDrum, kKeys };
+                              kChin, kRub, kHeart, kPeek, kShaker, kDrum, kKeys,
+                              kStartup, kListen, kThink, kSpeak, kHappy, kConfused,
+                              kSleepy, kSad, kAngry, kSurprised };
+inline bool CharacterAction(const char* name, CharacterPreview& result) {
+    if (!name) return false;
+    const char* names[] = {"wave", "chin", "rub", "bubble", "heart", "fish", "peek",
+                           "shaker", "drum", "keys", "guitar"};
+    const CharacterPreview poses[] = {CharacterPreview::kWave, CharacterPreview::kChin,
+        CharacterPreview::kRub, CharacterPreview::kBubble, CharacterPreview::kHeart,
+        CharacterPreview::kFish, CharacterPreview::kPeek, CharacterPreview::kShaker,
+        CharacterPreview::kDrum, CharacterPreview::kKeys, CharacterPreview::kGuitar};
+    for (unsigned i=0; i<11; ++i) {
+        unsigned j=0; while (name[j] && names[i][j] && name[j]==names[i][j]) ++j;
+        if (!name[j] && !names[i][j]) { result=poses[i]; return true; }
+    }
+    return false;
+}
 constexpr unsigned CharacterPreviewDurationMs(CharacterPreview scene) {
     switch (scene) {
     case CharacterPreview::kBubble:

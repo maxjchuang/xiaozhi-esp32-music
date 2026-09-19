@@ -55,6 +55,8 @@ public:
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
     virtual bool SupportsExpressionTest() const { return false; }
+    virtual bool SupportsCharacterActions() const { return false; }
+    virtual bool RequestCharacterAction(const std::string& name) { return false; }
     virtual bool SupportsMusicCompanionSettings() const { return false; }
     virtual bool ConfigureMusicCompanion(const std::string& mode, const std::string& instrument) { return false; }
     virtual bool StartExpressionTest() { return false; }

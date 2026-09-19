@@ -9,7 +9,7 @@
 namespace anim {
 
 enum class TheatreMode { kOff, kEnabled };
-enum class TheatreAct { kNone, kChin, kBubble, kFish, kPeek, kRub };
+enum class TheatreAct { kNone, kChin, kBubble, kFish, kPeek, kRub, kHeart };
 
 constexpr uint32_t TheatreDurationMs(TheatreAct act) {
     switch (act) {
@@ -18,6 +18,7 @@ constexpr uint32_t TheatreDurationMs(TheatreAct act) {
     case TheatreAct::kFish: return 6500;
     case TheatreAct::kPeek: return 6000;
     case TheatreAct::kRub: return 5400;
+    case TheatreAct::kHeart: return 4800;
     default: return 0;
     }
 }
@@ -107,9 +108,9 @@ private:
     static uint64_t Add(uint64_t a, uint64_t b) { return a > kNever-b ? kNever : a+b; }
     uint32_t Random() { return random_ ? random_() : 0; }
     TheatreAct Pick() {
-        const TheatreAct pool[] = {TheatreAct::kChin, TheatreAct::kChin, TheatreAct::kBubble, TheatreAct::kFish};
-        TheatreAct candidates[4]; unsigned count = 0;
-        for (unsigned i = 0; i < 4; ++i) if (pool[i] != previous_) candidates[count++] = pool[i];
+        const TheatreAct pool[] = {TheatreAct::kChin, TheatreAct::kChin, TheatreAct::kBubble, TheatreAct::kFish, TheatreAct::kPeek, TheatreAct::kHeart};
+        TheatreAct candidates[6]; unsigned count = 0;
+        for (unsigned i = 0; i < 6; ++i) if (pool[i] != previous_) candidates[count++] = pool[i];
         return candidates[Random() % count];
     }
 

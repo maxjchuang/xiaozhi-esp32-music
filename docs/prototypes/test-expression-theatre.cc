@@ -49,21 +49,21 @@ int main() {
         assert(shown.character_pose == CharacterPreview::kWave);
         director.SetBaseBehavior({DisplayBehavior::kListening, DisplayBehaviorSource::kDeviceState});
         TestAdvance(901);
-        assert(!shown.character_pose);
+        assert(shown.character_pose == CharacterPreview::kListen);
         idle();
         director.NotifyUserInteraction();
         TestAdvance(600000);
         assert(shown.character_pose == CharacterPreview::kRub);
         TestAdvance(5400);
-        assert(!shown.character_pose); // Legacy sleepy scene, not another act.
+        assert(shown.character_pose == CharacterPreview::kSleepy);
         TestAdvance(600000);
-        assert(!shown.character_pose);
+        assert(shown.character_pose == CharacterPreview::kSleepy);
         director.NotifyUserInteraction();
         assert(shown.character_pose == CharacterPreview::kEyes);
         TestAdvance(wait);
         assert(shown.character_pose && shown.character_pose != CharacterPreview::kEyes);
         director.PostTransientBehavior({DisplayBehavior::kFatalError, DisplayBehaviorSource::kSystem, {}, 1000});
-        assert(!shown.character_pose);
+        assert(shown.character_pose == CharacterPreview::kSurprised);
         TestAdvance(1001);
         director.NotifyUserInteraction();
         for (auto media : {DisplayBehavior::kMusicBuffering, DisplayBehavior::kMusicPaused}) {
@@ -75,16 +75,16 @@ int main() {
             director.NotifyUserInteraction();
         }
         director.SetCloudEmotion("happy");
-        assert(!shown.character_pose);
+        assert(shown.character_pose == CharacterPreview::kHappy);
         TestAdvance(5001);
         assert(shown.character_pose == CharacterPreview::kEyes);
         director.PostTransientBehavior({DisplayBehavior::kRecoverableError, DisplayBehaviorSource::kSystem, "charge", 4500});
-        assert(!shown.character_pose && shown.text == "charge");
+        assert(shown.character_pose == CharacterPreview::kSad && shown.text == "charge");
         TestAdvance(4501);
         assert(shown.character_pose == CharacterPreview::kEyes);
 #else
         TestAdvance(300000);
-        assert(!shown.character_pose); // Legacy five-minute sleep is unchanged.
+        assert(shown.character_pose == CharacterPreview::kSleepy);
 #endif
     }
     test_timer_fail = true;

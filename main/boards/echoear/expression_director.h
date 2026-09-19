@@ -10,6 +10,7 @@
 #include "display/display_behavior.h"
 #include "character_preview.h"
 #include "idle_theatre.h"
+#include "character_action.h"
 
 namespace anim {
 
@@ -53,8 +54,11 @@ public:
     void ForceRender();
     void NotifyUserInteraction();
     void SetTheatreBlocked(bool blocked);
+    bool RequestCharacterAction(const char* name);
 
 private:
+    CharacterActionRequest action_request_;
+    bool requested_sleepy_=false;
     struct BehaviorState {
         DisplayBehaviorRequest request;
         int priority;

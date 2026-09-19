@@ -15,12 +15,16 @@
 #include <time.h>
 #if CONFIG_ECHOEAR_CHARACTER_TEST_SERIAL
 #include "driver/usb_serial_jtag.h"
+#include "board.h"
+#include "music.h"
 #endif
 
 #include "display/lcd_display.h"
 #include "application.h"
 #include "expression_director.h"
 #include "music_companion_preferences.h"
+#include "character_fallback.h"
+#include "character_semantics.h"
 #include "settings.h"
 #include "mmap_generate_emoji_normal.h"
 #include "config.h"
@@ -34,6 +38,7 @@ static const char* TAG = "emoji";
 static gfx_obj_t* obj_label_tips = nullptr;
 static gfx_obj_t* obj_label_time = nullptr;
 static gfx_obj_t* obj_anim_eye = nullptr;
+static gfx_image_dsc_t cat_fallback_descriptor{};
 static gfx_obj_t* obj_anim_mic = nullptr;
 static gfx_obj_t* obj_img_icon = nullptr;
 static gfx_obj_t* obj_img_music_background = nullptr;
@@ -73,7 +78,7 @@ static void SetUIDisplayMode(UIDisplayMode mode)
     case UIDisplayMode::SHOW_NONE:
         break;
     case UIDisplayMode::SHOW_ANIM_TOP:
-        gfx_obj_set_visible(obj_anim_mic, true);
+        // Listening is expressed by the cat, not the old waveform overlay.
         break;
     case UIDisplayMode::SHOW_TIME:
         gfx_obj_set_visible(obj_label_time, true);
@@ -152,20 +157,17 @@ static void InitializeGraphics(esp_lcd_panel_handle_t panel, gfx_handle_t* engin
 
 static void InitializeEyeAnimation(gfx_handle_t engine_handle, mmap_assets_handle_t assets_handle)
 {
-    obj_anim_eye = gfx_anim_create(engine_handle);
-
-    const void* anim_data = mmap_assets_get_mem(assets_handle, MMAP_EMOJI_NORMAL_NEUTRAL_EAF);
-    size_t anim_size = mmap_assets_get_size(assets_handle, MMAP_EMOJI_NORMAL_NEUTRAL_EAF);
-
-    gfx_anim_set_src(obj_anim_eye, anim_data, anim_size);
-
-    gfx_obj_align(obj_anim_eye, GFX_ALIGN_LEFT_MID, 10, -20);
-    // Eye assets are mirrored from a single-eye animation.  Automatic mirror
-    // spacing keeps both the legacy 173 px AAF assets and the newer 125 px EAF
-    // assets centered on the 360 px EchoEar display.
-    gfx_anim_set_auto_mirror(obj_anim_eye, true);
-    gfx_anim_set_segment(obj_anim_eye, 0, 0xFFFF, 20, false);
-    gfx_anim_start(obj_anim_eye);
+    (void)assets_handle;
+    cat_fallback_descriptor.header.magic=C_ARRAY_HEADER_MAGIC;
+    cat_fallback_descriptor.header.cf=GFX_COLOR_FORMAT_RGB565A8;
+    cat_fallback_descriptor.header.w=360;
+    cat_fallback_descriptor.header.h=360;
+    cat_fallback_descriptor.header.stride=720;
+    cat_fallback_descriptor.data_size=sizeof(kCharacterFallback.bytes);
+    cat_fallback_descriptor.data=kCharacterFallback.bytes;
+    obj_anim_eye=gfx_img_create(engine_handle);
+    gfx_img_set_src(obj_anim_eye,&cat_fallback_descriptor);
+    gfx_obj_align(obj_anim_eye,GFX_ALIGN_TOP_LEFT,0,0);
 }
 
 static gfx_font_t CreateFont(mmap_assets_handle_t assets_handle, uint16_t font_size)
@@ -216,13 +218,10 @@ static void InitializeLabels(gfx_handle_t engine_handle)
 
 static void InitializeMicAnimation(gfx_handle_t engine_handle, mmap_assets_handle_t assets_handle)
 {
-    obj_anim_mic = gfx_anim_create(engine_handle);
+    (void)assets_handle;
+    obj_anim_mic = gfx_img_create(engine_handle);
     gfx_obj_align(obj_anim_mic, GFX_ALIGN_TOP_MID, 0, 25);
 
-    const void* anim_data = mmap_assets_get_mem(assets_handle, MMAP_EMOJI_NORMAL_LISTEN_EAF);
-    size_t anim_size = mmap_assets_get_size(assets_handle, MMAP_EMOJI_NORMAL_LISTEN_EAF);
-    gfx_anim_set_src(obj_anim_mic, anim_data, anim_size);
-    gfx_anim_start(obj_anim_mic);
     gfx_obj_set_visible(obj_anim_mic, false);
 }
 
@@ -609,8 +608,6 @@ void EmoteEngine::CommitMusicSceneLocked()
     gfx_obj_set_visible(obj_img_icon, false);
     gfx_obj_set_visible(obj_label_tips, false);
     gfx_obj_set_visible(obj_label_time, false);
-    gfx_anim_stop(obj_anim_eye);
-    gfx_anim_set_segment(obj_anim_eye, 0, 0xFFFF, 5, false);
 }
 
 void EmoteEngine::EnterMusicScene(const MusicTrackInfo& track)
@@ -870,8 +867,6 @@ void EmoteEngine::SetMusicOverlayVisible(bool visible)
         // ExpressionDirector may have selected a 20 FPS media expression just
         // before restoring the music layer. Keep the hidden animation stopped
         // and return the shared graphics cadence to the safe music rate.
-        gfx_anim_stop(obj_anim_eye);
-        gfx_anim_set_segment(obj_anim_eye, 0, 0xFFFF, 5, false);
     } else {
         // ApplyRenderModel() immediately selects and starts the requested eye
         // animation after hiding the music scene. Mark it dirty here so the
@@ -916,7 +911,6 @@ void EmoteEngine::ExitMusicScene()
     // the current state. This prevents the periodic clock callback and stale
     // music labels from becoming visible together during the hand-off.
     SetUIDisplayMode(UIDisplayMode::SHOW_NONE);
-    gfx_anim_start(obj_anim_eye);
     obj_anim_eye->is_dirty = true;  // animation dirtiness forces a full refresh
     Unlock();
 
@@ -1071,28 +1065,12 @@ void EmoteEngine::RotateMusicDisc()
 
 void EmoteEngine::setEyes(int aaf, bool repeat, int fps)
 {
-    if (!engine_handle_ || !assets_handle_) {
-        return;
-    }
-
-    const void* src_data = mmap_assets_get_mem(assets_handle_, aaf);
-    size_t src_len = mmap_assets_get_size(assets_handle_, aaf);
-    if (src_data == nullptr || src_len == 0) {
-        ESP_LOGE(TAG, "Cannot load expression asset %d; falling back to neutral", aaf);
-        src_data = mmap_assets_get_mem(assets_handle_, MMAP_EMOJI_NORMAL_NEUTRAL_EAF);
-        src_len = mmap_assets_get_size(assets_handle_, MMAP_EMOJI_NORMAL_NEUTRAL_EAF);
-        if (src_data == nullptr || src_len == 0) {
-            ESP_LOGE(TAG, "Neutral expression asset is unavailable; keeping current frame");
-            return;
-        }
-        repeat = true;
-        fps = 20;
-    }
-
+    (void)aaf; (void)repeat; (void)fps;
+    if (!engine_handle_ || !obj_anim_eye) return;
     Lock();
-    gfx_anim_set_src(obj_anim_eye, src_data, src_len);
-    gfx_anim_set_segment(obj_anim_eye, 0, 0xFFFF, fps, repeat);
-    gfx_anim_start(obj_anim_eye);
+    gfx_img_set_src(obj_anim_eye, &cat_fallback_descriptor);
+    gfx_obj_set_visible(obj_anim_eye, !IsMusicOverlayVisible());
+    ESP_LOGI(TAG,"Character static fallback (legacy decoder disabled)");
     Unlock();
 }
 
@@ -1105,7 +1083,7 @@ void EmoteEngine::stopEyes()
 bool EmoteEngine::BeginCharacterPreview(CharacterPreview initial, bool guitar_cache,
                                        bool companion, double seconds)
 {
-    if (!engine_handle_ || (IsMusicSceneActive() && !companion)) return false;
+    if (!engine_handle_ || (IsMusicOverlayVisible() && !companion)) return false;
     if (companion) {
         if (!IsMusicSceneActive()) return false;
         music_companion_visible_ = true;
@@ -1132,7 +1110,8 @@ bool EmoteEngine::BeginCharacterPreview(CharacterPreview initial, bool guitar_ca
     character_descriptor_.data_size = kCharacterBytes;
     character_descriptor_.data = character_front_;
     Lock();
-    character_image_ = gfx_img_create(engine_handle_);
+    // Reuse the early-created cat object so captions/icons stay above it.
+    character_image_ = obj_anim_eye;
     if (character_image_) {
         if (companion) {
             // Prepare the first frame before atomically retiring the cover.
@@ -1142,9 +1121,8 @@ bool EmoteEngine::BeginCharacterPreview(CharacterPreview initial, bool guitar_ca
         }
         gfx_img_set_src(character_image_, &character_descriptor_);
         gfx_obj_align(character_image_, GFX_ALIGN_TOP_LEFT, 0, 0);
-        gfx_anim_stop(obj_anim_eye);
-        gfx_obj_set_visible(obj_anim_eye, false);
-        SetUIDisplayMode(UIDisplayMode::SHOW_NONE);
+        gfx_obj_set_visible(obj_anim_eye, true);
+        if (companion) SetUIDisplayMode(UIDisplayMode::SHOW_NONE);
     }
     Unlock();
     if (!character_image_) { EndCharacterPreview(); return false; }
@@ -1184,7 +1162,7 @@ void EmoteEngine::EndCharacterPreview()
     if (engine_handle_) {
         Lock();
         if (character_image_) {
-            gfx_obj_delete(character_image_);
+            gfx_img_set_src(character_image_, &cat_fallback_descriptor);
             character_image_ = nullptr;
             gfx_obj_set_visible(obj_anim_eye, !IsMusicOverlayVisible());
         }
@@ -1225,6 +1203,7 @@ void EmoteEngine::SetIcon(int asset_id)
 
     Lock();
     if (!SetupImageDescriptor(assets_handle_, &icon_img_dsc, asset_id)) {
+        Unlock();
         return;
     }
     gfx_img_set_src(obj_img_icon, static_cast<void*>(&icon_img_dsc));
@@ -1266,7 +1245,7 @@ EmoteDisplay::EmoteDisplay(esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle
                                                this, 1, &live_task_, 0) != pdPASS) {
         live_task_ = nullptr;
         live_failed_ = true;
-        ESP_LOGE(TAG, "Character live unavailable; using legacy expressions");
+        ESP_LOGE(TAG, "Character live unavailable; using static cat");
     }
 #endif
     InitializeDirector();
@@ -1308,6 +1287,7 @@ void EmoteDisplay::StopLiveCharacter()
 void EmoteDisplay::LiveCharacterTask(void* arg)
 {
     auto* self = static_cast<EmoteDisplay*>(arg);
+    std::optional<CharacterPreview> reported_pose;
     while (!self->live_shutdown_) {
         const int64_t frame_start = esp_timer_get_time();
         bool failed = false;
@@ -1328,6 +1308,10 @@ void EmoteDisplay::LiveCharacterTask(void* arg)
                     failed = !self->engine_->DrawCharacterPreview(scene, seconds);
             }
             self->companion_redraw_ = false;
+            if (!failed && submitted && reported_pose!=scene) {
+                reported_pose=scene;
+                ESP_LOGI(TAG,"Character frame pose=%u submitted=1",static_cast<unsigned>(scene));
+            }
             if (failed) {
                 self->live_failed_ = true;
                 self->live_pose_.reset();
@@ -1355,10 +1339,10 @@ void EmoteDisplay::LiveCharacterTask(void* arg)
                     self->companion_render_us_ = self->companion_max_us_ = 0;
                 }
             }
-        }
+        } else reported_pose.reset();
         xSemaphoreGive(self->live_mutex_);
         if (failed) {
-            ESP_LOGE(TAG, "Character live failed; restoring legacy expressions");
+            ESP_LOGE(TAG, "Character live failed; restoring static cat");
             Application::GetInstance().Schedule([self]() {
                 if (self->director_) self->director_->ForceRender();
             });
@@ -1461,6 +1445,27 @@ bool EmoteDisplay::ConfigureMusicCompanion(const std::string& mode,const std::st
 #else
     return false;
 #endif
+}
+
+bool EmoteDisplay::SupportsCharacterActions() const
+{
+#if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+    return live_mutex_ && !live_failed_;
+#else
+    return false;
+#endif
+}
+
+bool EmoteDisplay::RequestCharacterAction(const std::string& name)
+{
+    CharacterPreview pose;
+    if (!SupportsCharacterActions() || !CharacterAction(name.c_str(),pose) ||
+        expression_test_running_ || engine_->IsMusicSceneActive()) return false;
+    Application::GetInstance().Schedule([this,name]() {
+        const bool accepted=director_ && director_->RequestCharacterAction(name.c_str());
+        ESP_LOGI(TAG,"Character action scheduled accepted=%d name=%s",accepted,name.c_str());
+    });
+    return true;
 }
 
 void EmoteDisplay::SetEmotion(const char* emotion)
@@ -1698,6 +1703,64 @@ void EmoteDisplay::CharacterSerialTask(void* arg)
             continue;
         }
         line[length] = 0;
+        if (!overflow && (std::strcmp(line,"character-test music-play")==0 ||
+                          std::strcmp(line,"character-test music-stop")==0)) {
+            if (std::strcmp(line,"character-test music-stop")==0) {
+                auto* music=Board::GetInstance().GetMusic();
+                if(music) music->RequestStopStreaming();
+            } else {
+                const auto created=xTaskCreate([](void*) {
+                    auto* music=Board::GetInstance().GetMusic();
+                    const bool ok=music && music->PlayUrl("https://dl.espressif.cn/dl/audio/ff-16b-2c-44100hz.mp3","猫咪自动验收");
+                    ESP_LOGI(TAG,"Character probe music accepted=%d",ok);
+                    vTaskDelete(nullptr);
+                },"cat_music_test",8192,nullptr,1,nullptr);
+                if(created!=pdPASS) ESP_LOGE(TAG,"Character probe music task failed");
+            }
+            length=0; overflow=false; continue;
+        }
+#if CONFIG_ECHOEAR_CHARACTER_LIVE_TRIAL
+        if (!overflow && (std::strcmp(line,"character-test fallback")==0 ||
+                          std::strcmp(line,"character-test recover")==0)) {
+            const bool fail=std::strcmp(line,"character-test fallback")==0;
+            Application::GetInstance().Schedule([self,fail]() {
+                self->StopLiveCharacter();
+                self->live_failed_=fail;
+                if(self->director_) self->director_->ForceRender();
+                ESP_LOGI(TAG,"Character probe fallback=%d",fail);
+            });
+            length=0; overflow=false; continue;
+        }
+#endif
+        if (!overflow && std::strncmp(line,"character-test state ",21)==0) {
+            const std::string name(line+21);
+            Application::GetInstance().Schedule([self,name]() {
+                const char* names[]={"startup","connecting","idle","wake","listen","think","tool","speak","success","error","fatal"};
+                for(int i=0;i<11;i++) if(name==names[i] && self->director_) {
+                    self->director_->PostTransientBehavior({static_cast<DisplayBehavior>(i),DisplayBehaviorSource::kSystem,"自动验收",1800});
+                    ESP_LOGI(TAG,"Character probe state=%s accepted=1",name.c_str());
+                    return;
+                }
+                ESP_LOGI(TAG,"Character probe accepted=0");
+            });
+            length=0; overflow=false; continue;
+        }
+        if (!overflow && std::strncmp(line,"character-test action ",22)==0) {
+            const std::string name(line+22);
+            Application::GetInstance().Schedule([self,name]() {
+                const bool accepted=self->RequestCharacterAction(name);
+                ESP_LOGI(TAG,"Character probe action=%s accepted=%d",name.c_str(),accepted);
+            });
+            length=0; overflow=false; continue;
+        }
+        if (!overflow && std::strncmp(line,"character-test emotion ",23)==0) {
+            const std::string name(line+23);
+            Application::GetInstance().Schedule([self,name]() {
+                self->SetEmotion(name.c_str());
+                ESP_LOGI(TAG,"Character probe emotion=%s",name.c_str());
+            });
+            length=0; overflow=false; continue;
+        }
 #if CONFIG_ECHOEAR_MUSIC_COMPANION_TRIAL
         std::optional<CharacterPreview> instrument;
         if (!overflow) {
@@ -1941,6 +2004,7 @@ void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
     if (companion_enabled_ && live_mutex_ && !live_failed_ && !expression_test_running_ &&
         engine_->IsMusicSceneActive() && music_scene_behavior_ready_ &&
         render_model.music_scene_visible) {
+        if (!live_companion_) StopLiveCharacter();
         xSemaphoreTake(live_mutex_, portMAX_DELAY);
         const int64_t now = esp_timer_get_time();
         companion_clock_.SetRunning(now, render_model.music_animation_running);
@@ -1961,15 +2025,22 @@ void EmoteDisplay::ApplyRenderModel(const ExpressionRenderModel& render_model)
     }
 #endif
     if (live_mutex_ && !live_failed_ && !expression_test_running_ &&
-        !engine_->IsMusicSceneActive() && render_model.character_pose &&
-        render_model.text.empty()) {
+        !render_model.music_scene_visible) {
+        if (live_companion_) StopLiveCharacter();
+        if (engine_->IsMusicSceneActive()) engine_->SetMusicOverlayVisible(false);
+        const auto pose=render_model.character_pose.value_or(CharacterForAsset(render_model.animation_asset_id));
         xSemaphoreTake(live_mutex_, portMAX_DELAY);
-        if (live_pose_ != render_model.character_pose) {
-            live_pose_ = render_model.character_pose;
+        if (live_pose_ != pose) {
+            live_pose_ = pose;
             live_started_us_ = esp_timer_get_time();
             ESP_LOGI(TAG, "Character live pose=%d", static_cast<int>(*live_pose_));
         }
         xSemaphoreGive(live_mutex_);
+        if (!render_model.text.empty()) engine_->SetIcon(render_model.icon_asset_id);
+        engine_->Lock();
+        gfx_label_set_text(obj_label_tips,render_model.text.c_str());
+        SetUIDisplayMode(render_model.text.empty()?UIDisplayMode::SHOW_NONE:UIDisplayMode::SHOW_TIPS);
+        engine_->Unlock();
         return;
     }
     StopLiveCharacter();
