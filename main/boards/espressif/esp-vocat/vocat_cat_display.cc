@@ -212,6 +212,9 @@ void VocatCatDisplay::SetStatus(const char* status) {
         action_request_.Cancel();
         xSemaphoreGive(state_mutex_);
     }
+    if (!status || std::strcmp(status, Lang::Strings::SPEAKING) != 0) {
+        emote_set_obj_visible(GetEmoteHandle(), EMT_DEF_ELEM_STATUS_ICON, false);
+    }
 }
 
 void VocatCatDisplay::ClearSubtitle() {
@@ -422,7 +425,9 @@ void VocatCatDisplay::SetMusicArtwork(const uint16_t* background, int background
 }
 
 void VocatCatDisplay::SetMusicUiVisible(bool visible) {
-    emote_set_obj_visible(GetEmoteHandle(), EMT_DEF_ELEM_STATUS_ICON, !visible);
+    if (visible) {
+        emote_set_obj_visible(GetEmoteHandle(), EMT_DEF_ELEM_STATUS_ICON, false);
+    }
     if (music_disc_image_) {
         gfx_obj_set_visible(music_disc_image_, visible);
     }

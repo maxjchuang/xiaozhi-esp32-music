@@ -30,6 +30,12 @@ class EspVocatMusicMigrationTests(unittest.TestCase):
             music.index("app.ToggleChatState()"),
             music.index("PushPcmToPlaybackQueue"),
         )
+        download_task = music[music.index("void Esp32Music::DownloadTask") :]
+        self.assertIn("MUSIC_DOWNLOAD deferred_for_tts_ms", download_task)
+        self.assertLess(
+            download_task.index("kDeviceStateSpeaking"),
+            download_task.index("CreateHttp(0)"),
+        )
 
     def test_repeat_play_does_not_query_pthread_identity_from_main_task(self):
         music = self.read("main/boards/common/esp32_music.cc")
@@ -100,7 +106,7 @@ class EspVocatMusicMigrationTests(unittest.TestCase):
         self.assertIn("SetMusicArtwork", display)
         self.assertIn("MUSIC_ARTWORK ready=1", display)
         self.assertIn("RenderRotatingDisc", display)
-        self.assertIn("EMT_DEF_ELEM_STATUS_ICON, !visible", display)
+        self.assertIn("EMT_DEF_ELEM_STATUS_ICON, false", display)
         self.assertIn("vocat_music_title", display)
         self.assertIn("vocat_music_current", display)
 

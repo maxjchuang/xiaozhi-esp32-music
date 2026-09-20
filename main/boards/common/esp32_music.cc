@@ -459,6 +459,26 @@ void Esp32Music::ClearBuffer() {
 }
 
 void Esp32Music::DownloadTask(uint32_t generation, std::string url) {
+    // The play tool is called while the assistant is still speaking its
+    // acknowledgement. Starting a large HTTP transfer at that point can starve
+    // the MQTT TTS stream on this board and make the acknowledgement stutter.
+    const int64_t acknowledgement_wait_started_us = esp_timer_get_time();
+    bool waited_for_acknowledgement = false;
+    while (downloading_ && playing_ && generation == generation_ &&
+           Application::GetInstance().GetDeviceState() == kDeviceStateSpeaking) {
+        waited_for_acknowledgement = true;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (waited_for_acknowledgement) {
+        ESP_LOGI(TAG, "MUSIC_DOWNLOAD deferred_for_tts_ms=%lld",
+                 static_cast<long long>((esp_timer_get_time() - acknowledgement_wait_started_us) /
+                                        1000));
+    }
+    if (!downloading_ || !playing_ || generation != generation_) {
+        buffer_cv_.notify_all();
+        return;
+    }
+
     size_t offset = 0;
     bool complete = false;
     constexpr int kAttempts = 4;
@@ -722,8 +742,11 @@ void Esp32Music::PlaybackTask(uint32_t generation) {
                     if (display &&
                         Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
                         display->SetMusicPlaybackActive(true);
-                        display->SetStatus("音乐播放中");
                         display->SetChatMessage("assistant", ("《" + title + "》").c_str());
+                        // This label describes local playback and has no matching
+                        // TTS audio. Apply the status last so Vocat can clear the
+                        // legacy speaker icon raised by SetChatMessage.
+                        display->SetStatus("音乐播放中");
                         display->SetEmotion("happy");
                     }
                 });
