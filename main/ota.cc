@@ -3,6 +3,8 @@
 #include "settings.h"
 #include "assets/lang_config.h"
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <cJSON.h>
 #include <esp_log.h>
 #include <esp_partition.h>
@@ -10,14 +12,17 @@
 #include <esp_app_format.h>
 #include <esp_efuse.h>
 #include <esp_efuse_table.h>
+#include <esp_heap_caps.h>
 #ifdef SOC_HMAC_SUPPORTED
 #include <esp_hmac.h>
 #endif
 
-#include <cstring>
-#include <vector>
-#include <sstream>
 #include <algorithm>
+#include <charconv>
+#include <cstring>
+#include <expected>
+#include <system_error>
+#include <vector>
 
 #define TAG "Ota"
 
@@ -51,17 +56,17 @@ std::string Ota::GetCheckVersionUrl() {
 
 std::unique_ptr<Http> Ota::SetupHttp() {
     auto& board = Board::GetInstance();
-    auto app_desc = esp_app_get_description();
-
     auto network = board.GetNetwork();
     auto http = network->CreateHttp(0);
+    auto user_agent = SystemInfo::GetUserAgent();
     http->SetHeader("Activation-Version", has_serial_number_ ? "2" : "1");
     http->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
     http->SetHeader("Client-Id", board.GetUuid());
     if (has_serial_number_) {
         http->SetHeader("Serial-Number", serial_number_.c_str());
+        ESP_LOGI(TAG, "Setup HTTP, User-Agent: %s, Serial-Number: %s", user_agent.c_str(), serial_number_.c_str());
     }
-    http->SetHeader("User-Agent", std::string(BOARD_NAME "/") + app_desc->version);
+    http->SetHeader("User-Agent", user_agent);
     http->SetHeader("Accept-Language", Lang::CODE);
     http->SetHeader("Content-Type", "application/json");
 
@@ -71,7 +76,7 @@ std::unique_ptr<Http> Ota::SetupHttp() {
 /* 
  * Specification: https://ccnphfhqs21z.feishu.cn/wiki/FjW6wZmisimNBBkov6OcmfvknVd
  */
-bool Ota::CheckVersion() {
+NetworkResult<> Ota::CheckVersion() {
     auto& board = Board::GetInstance();
     auto app_desc = esp_app_get_description();
 
@@ -82,24 +87,28 @@ bool Ota::CheckVersion() {
     std::string url = GetCheckVersionUrl();
     if (url.length() < 10) {
         ESP_LOGE(TAG, "Check version URL is not properly set");
-        return false;
+        return std::unexpected(NetworkError::InvalidArgument());
     }
 
     auto http = SetupHttp();
 
-    std::string data = board.GetJson();
+    std::string data = board.GetSystemInfoJson();
     std::string method = data.length() > 0 ? "POST" : "GET";
     http->SetContent(std::move(data));
 
-    if (!http->Open(method, url)) {
-        ESP_LOGE(TAG, "Failed to open HTTP connection");
-        return false;
+    if (auto opened = http->Open(method, url); !opened) {
+        ESP_LOGE(TAG, "Failed to open HTTP connection: %s", opened.error().ToString().c_str());
+        return opened;
     }
 
     auto status_code = http->GetStatusCode();
-    if (status_code != 200) {
-        ESP_LOGE(TAG, "Failed to check version, status code: %d", status_code);
-        return false;
+    if (!status_code) {
+        ESP_LOGE(TAG, "Failed to read HTTP status: %s", status_code.error().ToString().c_str());
+        return std::unexpected(status_code.error());
+    }
+    if (*status_code != 200) {
+        ESP_LOGE(TAG, "Failed to check version, status code: %d", *status_code);
+        return std::unexpected(NetworkError::HttpFailed(*status_code));
     }
 
     data = http->ReadAll();
@@ -112,7 +121,7 @@ bool Ota::CheckVersion() {
     cJSON *root = cJSON_Parse(data.c_str());
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse JSON response");
-        return false;
+        return std::unexpected(NetworkError::ProtocolError());
     }
 
     has_activation_code_ = false;
@@ -237,7 +246,7 @@ bool Ota::CheckVersion() {
     }
 
     cJSON_Delete(root);
-    return true;
+    return {};
 }
 
 void Ota::MarkCurrentVersionValid() {
@@ -260,7 +269,7 @@ void Ota::MarkCurrentVersionValid() {
     }
 }
 
-bool Ota::Upgrade(const std::string& firmware_url) {
+bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback) {
     ESP_LOGI(TAG, "Upgrading firmware from %s", firmware_url.c_str());
     esp_ota_handle_t update_handle = 0;
     auto update_partition = esp_ota_get_next_update_partition(NULL);
@@ -275,13 +284,18 @@ bool Ota::Upgrade(const std::string& firmware_url) {
 
     auto network = Board::GetInstance().GetNetwork();
     auto http = network->CreateHttp(0);
-    if (!http->Open("GET", firmware_url)) {
-        ESP_LOGE(TAG, "Failed to open HTTP connection");
+    if (auto opened = http->Open("GET", firmware_url); !opened) {
+        ESP_LOGE(TAG, "Failed to open HTTP connection: %s", opened.error().ToString().c_str());
         return false;
     }
 
-    if (http->GetStatusCode() != 200) {
-        ESP_LOGE(TAG, "Failed to get firmware, status code: %d", http->GetStatusCode());
+    auto status_code = http->GetStatusCode();
+    if (!status_code) {
+        ESP_LOGE(TAG, "Failed to read HTTP status: %s", status_code.error().ToString().c_str());
+        return false;
+    }
+    if (*status_code != 200) {
+        ESP_LOGE(TAG, "Failed to get firmware, status code: %d", *status_code);
         return false;
     }
 
@@ -291,49 +305,49 @@ bool Ota::Upgrade(const std::string& firmware_url) {
         return false;
     }
 
-    char buffer[512];
+    constexpr size_t PAGE_SIZE = 4096;
+    char* buffer = (char*)heap_caps_malloc(PAGE_SIZE, MALLOC_CAP_INTERNAL);
+    if (buffer == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate buffer");
+        return false;
+    }
+
+    size_t buffer_offset = 0;  // Current data size in buffer
     size_t total_read = 0, recent_read = 0;
     auto last_calc_time = esp_timer_get_time();
     while (true) {
-        int ret = http->Read(buffer, sizeof(buffer));
-        if (ret < 0) {
-            ESP_LOGE(TAG, "Failed to read HTTP data: %s", esp_err_to_name(ret));
+        auto ret = http->Read(buffer + buffer_offset, PAGE_SIZE - buffer_offset);
+        if (!ret) {
+            ESP_LOGE(TAG, "Failed to read HTTP data: %s", ret.error().ToString().c_str());
+            heap_caps_free(buffer);
             return false;
         }
+        int n = *ret;
 
         // Calculate speed and progress every second
-        recent_read += ret;
-        total_read += ret;
-        if (esp_timer_get_time() - last_calc_time >= 1000000 || ret == 0) {
+        recent_read += n;
+        total_read += n;
+        buffer_offset += n;
+        if (esp_timer_get_time() - last_calc_time >= 1000000 || n == 0) {
             size_t progress = total_read * 100 / content_length;
             ESP_LOGI(TAG, "Progress: %u%% (%u/%u), Speed: %uB/s", progress, total_read, content_length, recent_read);
-            if (upgrade_callback_) {
-                upgrade_callback_(progress, recent_read);
+            if (callback) {
+                callback(progress, recent_read);
             }
             last_calc_time = esp_timer_get_time();
             recent_read = 0;
         }
 
-        if (ret == 0) {
-            break;
-        }
-
         if (!image_header_checked) {
-            image_header.append(buffer, ret);
+            image_header.append(buffer, buffer_offset);
             if (image_header.size() >= sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t)) {
                 esp_app_desc_t new_app_info;
                 memcpy(&new_app_info, image_header.data() + sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t), sizeof(esp_app_desc_t));
-                ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
-
-                auto current_version = esp_app_get_description()->version;
-                if (memcmp(new_app_info.version, current_version, sizeof(new_app_info.version)) == 0) {
-                    ESP_LOGE(TAG, "Firmware version is the same, skipping upgrade");
-                    return false;
-                }
 
                 if (esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle)) {
                     esp_ota_abort(update_handle);
                     ESP_LOGE(TAG, "Failed to begin OTA");
+                    heap_caps_free(buffer);
                     return false;
                 }
 
@@ -341,14 +355,27 @@ bool Ota::Upgrade(const std::string& firmware_url) {
                 std::string().swap(image_header);
             }
         }
-        auto err = esp_ota_write(update_handle, buffer, ret);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to write OTA data: %s", esp_err_to_name(err));
-            esp_ota_abort(update_handle);
-            return false;
+
+        // Write to flash when buffer is full (4KB) or it's the last chunk
+        bool is_last_chunk = (n == 0);
+        if (buffer_offset == PAGE_SIZE || (is_last_chunk && buffer_offset > 0)) {
+            auto err = esp_ota_write(update_handle, buffer, buffer_offset);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to write OTA data: %s", esp_err_to_name(err));
+                esp_ota_abort(update_handle);
+                heap_caps_free(buffer);
+                return false;
+            }
+
+            buffer_offset = 0;
+        }
+
+        if (is_last_chunk) {
+            break;
         }
     }
     http->Close();
+    heap_caps_free(buffer);
 
     esp_err_t err = esp_ota_end(update_handle);
     if (err != ESP_OK) {
@@ -371,35 +398,62 @@ bool Ota::Upgrade(const std::string& firmware_url) {
 }
 
 bool Ota::StartUpgrade(std::function<void(int progress, size_t speed)> callback) {
-    upgrade_callback_ = callback;
-    return Upgrade(firmware_url_);
+    return Upgrade(firmware_url_, callback);
 }
 
-std::vector<int> Ota::ParseVersion(const std::string& version) {
-    std::vector<int> versionNumbers;
-    std::stringstream ss(version);
-    std::string segment;
-    
-    while (std::getline(ss, segment, '.')) {
-        versionNumbers.push_back(std::stoi(segment));
+
+// Versions are compared as dot-separated decimal numbers. Parsing must never throw: exceptions are
+// disabled in this project, so a malformed string from the server would otherwise terminate the
+// firmware instead of being reported as an error.
+std::expected<std::vector<int>, std::string> Ota::ParseVersion(const std::string& version) {
+    std::vector<int> version_numbers;
+    size_t start = 0;
+
+    while (true) {
+        size_t end = version.find('.', start);
+        std::string segment =
+            version.substr(start, end == std::string::npos ? std::string::npos : end - start);
+
+        int value = 0;
+        auto [ptr, ec] = std::from_chars(segment.data(), segment.data() + segment.size(), value);
+        if (segment.empty() || ec != std::errc() || ptr != segment.data() + segment.size()) {
+            return std::unexpected("invalid version segment \"" + segment + "\"");
+        }
+        version_numbers.push_back(value);
+
+        if (end == std::string::npos) {
+            return version_numbers;
+        }
+        start = end + 1;
     }
-    
-    return versionNumbers;
 }
 
 bool Ota::IsNewVersionAvailable(const std::string& currentVersion, const std::string& newVersion) {
-    std::vector<int> current = ParseVersion(currentVersion);
-    std::vector<int> newer = ParseVersion(newVersion);
-    
-    for (size_t i = 0; i < std::min(current.size(), newer.size()); ++i) {
-        if (newer[i] > current[i]) {
+    auto current = ParseVersion(currentVersion);
+    if (!current) {
+        ESP_LOGW(TAG, "Cannot parse current version \"%s\": %s", currentVersion.c_str(),
+                 current.error().c_str());
+        return false;
+    }
+
+    auto newer = ParseVersion(newVersion);
+    if (!newer) {
+        // Never report an update we cannot compare, otherwise a malformed version string would
+        // trigger a firmware downgrade or an endless upgrade loop.
+        ESP_LOGW(TAG, "Ignoring firmware version \"%s\": %s", newVersion.c_str(),
+                 newer.error().c_str());
+        return false;
+    }
+
+    for (size_t i = 0; i < std::min(current->size(), newer->size()); ++i) {
+        if ((*newer)[i] > (*current)[i]) {
             return true;
-        } else if (newer[i] < current[i]) {
+        } else if ((*newer)[i] < (*current)[i]) {
             return false;
         }
     }
-    
-    return newer.size() > current.size();
+
+    return newer->size() > current->size();
 }
 
 std::string Ota::GetActivationPayload() {
@@ -457,17 +511,21 @@ esp_err_t Ota::Activate() {
     std::string data = GetActivationPayload();
     http->SetContent(std::move(data));
 
-    if (!http->Open("POST", url)) {
-        ESP_LOGE(TAG, "Failed to open HTTP connection");
+    if (auto opened = http->Open("POST", url); !opened) {
+        ESP_LOGE(TAG, "Failed to open HTTP connection: %s", opened.error().ToString().c_str());
         return ESP_FAIL;
     }
-    
+
     auto status_code = http->GetStatusCode();
-    if (status_code == 202) {
+    if (!status_code) {
+        ESP_LOGE(TAG, "Failed to read HTTP status: %s", status_code.error().ToString().c_str());
+        return ESP_FAIL;
+    }
+    if (*status_code == 202) {
         return ESP_ERR_TIMEOUT;
     }
-    if (status_code != 200) {
-        ESP_LOGE(TAG, "Failed to activate, code: %d, body: %s", status_code, http->ReadAll().c_str());
+    if (*status_code != 200) {
+        ESP_LOGE(TAG, "Failed to activate, code: %d, body: %s", *status_code, http->ReadAll().c_str());
         return ESP_FAIL;
     }
 
