@@ -37,7 +37,9 @@ private:
 
     void DownloadTask(uint32_t generation, std::string url);
     void PlaybackTask(uint32_t generation);
-    void CoverTask(uint32_t generation, std::string metadata_url);
+    void MetadataTask(uint32_t generation, std::string metadata_url);
+    bool ParseLyrics(const std::string& content);
+    void UpdateMusicDisplay(int64_t position_ms);
     void StopAndJoin(bool terminal_event);
     void ClearBuffer();
     bool RecreateDecoder();
@@ -53,7 +55,7 @@ private:
     std::atomic<int64_t> played_ms_{0};
     std::thread download_thread_;
     std::thread playback_thread_;
-    std::thread cover_thread_;
+    std::thread metadata_thread_;
     std::deque<std::vector<uint8_t>> chunks_;
     size_t buffered_bytes_ = 0;
     mutable std::mutex buffer_mutex_;
@@ -61,6 +63,12 @@ private:
     void* decoder_ = nullptr;
 
     std::string song_name_;
+    std::mutex lyrics_mutex_;
+    std::vector<std::pair<int, std::string>> lyrics_;
+    std::atomic<int> current_lyric_index_{-1};
+    std::atomic<int> track_duration_ms_{0};
+    std::atomic<int> lyric_offset_ms_{0};
+    std::atomic<int64_t> last_progress_update_ms_{-1};
     std::mutex telemetry_mutex_;
     std::string telemetry_url_;
     std::string playback_id_;

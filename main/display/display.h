@@ -23,6 +23,13 @@
 class LvglFont;
 class LvglImage;
 
+struct MusicTrackInfo {
+    std::string title;
+    std::string artist;
+    std::string album;
+    int duration_ms = 0;
+};
+
 class Theme {
 public:
     Theme(const std::string& name) : name_(name) {}
@@ -96,10 +103,26 @@ public:
         return false;
     }
     virtual void SetMusicPlaybackActive(bool active) { (void)active; }
-    virtual void SetMusicCoverArtwork(const uint16_t* pixels, int width, int height) {
-        (void)pixels;
-        (void)width;
-        (void)height;
+    virtual void SetMusicTrackInfo(const MusicTrackInfo& track) { (void)track; }
+    virtual void SetMusicArtwork(const uint16_t* background, int background_width,
+                                 int background_height, const uint16_t* disc, int disc_width,
+                                 int disc_height) {
+        (void)background;
+        (void)background_width;
+        (void)background_height;
+        (void)disc;
+        (void)disc_width;
+        (void)disc_height;
+    }
+    virtual void SetMusicLyricWindow(const std::string& previous, const std::string& current,
+                                     const std::string& next) {
+        (void)previous;
+        (void)current;
+        (void)next;
+    }
+    virtual void UpdateMusicProgress(int position_ms, int duration_ms) {
+        (void)position_ms;
+        (void)duration_ms;
     }
 
     inline int width() const { return width_; }

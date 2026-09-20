@@ -97,13 +97,20 @@ class EspVocatMusicMigrationTests(unittest.TestCase):
         self.assertIn("不调整屏幕亮度", mcp)
         self.assertIn("void VocatCatDisplay::ClearSubtitle()", display)
         self.assertIn('gfx_label_set_text(label, "")', display)
-        self.assertIn("SetMusicCoverArtwork", display)
-        self.assertIn("MUSIC_COVER ready=1", display)
+        self.assertIn("SetMusicArtwork", display)
+        self.assertIn("MUSIC_ARTWORK ready=1", display)
+        self.assertIn("RenderRotatingDisc", display)
+        self.assertIn("EMT_DEF_ELEM_STATUS_ICON, !visible", display)
+        self.assertIn("vocat_music_title", display)
+        self.assertIn("vocat_music_current", display)
 
         music = self.read("main/boards/common/esp32_music.cc")
-        self.assertIn("void Esp32Music::CoverTask", music)
+        self.assertIn("void Esp32Music::MetadataTask", music)
         self.assertIn("buffered_bytes_ >= kMaxBufferedBytes / 2", music)
         self.assertIn("GetDeviceState() == kDeviceStateIdle", music)
+        self.assertIn('resource_base + "disc.jpg"', music)
+        self.assertIn('resource_base + "lyrics.lrc"', music)
+        self.assertIn("UpdateMusicDisplay(played_ms_.load())", music)
 
     def test_cat_renderer_action_lifecycle_and_preferences(self):
         source = r'''
